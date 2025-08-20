@@ -166,19 +166,19 @@ ELITE_ICON = 'Ω'
 # ========================== BALANCE ==========================
 BALANCE = {
     # COMBAT
-    'combat_xp_mult':   0.60,   # 60% de l'XP habituelle
-    'combat_gold_mult': 0.70,   # 70% de l'or habituel
+    'combat_xp_mult':   0.60,   # % de l'XP habituelle
+    'combat_gold_mult': 0.70,   # % de l'or habituel
 
     # LOOT après combat
-    'loot_item_chance': 0.45,   # au lieu de 0.70
-    'loot_cons_chance': 0.35,   # au lieu de 0.55
+    'loot_item_chance': 0.45,   
+    'loot_cons_chance': 0.35,   
 
     # CARTE
     'map_items_per_floor': 3,   # au lieu de 6
 
     # PNJ par étage (peut être 0)
     'npcs_min': 0,
-    'npcs_max': 2,              # anciennement 2 fixes
+    'npcs_max': 1,              # anciennement 2 fixes
 
     # NIVEAUX
     'level_xp_threshold': 40,   # au lieu de 30 (plus lent)
@@ -189,6 +189,21 @@ BALANCE = {
     # QUÊTES (récompenses)
     'quest_xp_mult':   0.70,
     'quest_gold_mult': 0.70,
+
+    # Scaling par NIVEAU du joueur et par PROFONDEUR (étage)
+    'mon_per_level':  {'hp': 0.12, 'atk': 0.08, 'def': 0.06},   # +12% PV, +8% ATK, +6% DEF / niveau
+    'mon_per_depth':  {'hp': 0.18, 'atk': 0.12, 'def': 0.08},   # +18% PV, +12% ATK, +8% DEF / étage
+
+    # Soft cap : au-delà d’un certain niveau, la progression ennemie ralentit
+    'mon_softcap_level': 8,
+    'mon_softcap_mult':  0.45,  # après le softcap, les % sont multipliés par 0.45
+
+    # Bonus des élites (en plus du scaling de base)
+    'elite_bonus': {'hp': 0.40, 'atk': 0.25, 'def': 0.20},
+
+    # Garde-fous de jouabilité (post-ajustement)
+    'mon_max_atk_vs_player_hp': 0.45,  # ATK monstre ≤ 45% des PV max du joueur
+    'mon_max_def_vs_player_atk': 0.85, # DEF monstre ≤ 85% de l’ATK du joueur (sinon combats trop longs)
 }
 
 # Déplacements: ZQSD/WASD seulement
@@ -437,6 +452,54 @@ def rarity_color(r):
         'Étrange': Ansi.BRIGHT_GREEN,
     }.get(r, Ansi.WHITE)
 
+# ========================== SCALING ==========================
+
+def _scaled_fraction(base, lvl, per_lvl, softcap_lvl, soft_mult):
+    """Calcule 1 + bonus de scaling avec soft cap."""
+    l1 = min(lvl, softcap_lvl)
+    l2 = max(0, lvl - softcap_lvl)
+    return 1.0 + l1 * per_lvl + l2 * per_lvl * soft_mult
+
+def scale_monster(mdef: dict, player, depth: int, elite: bool=False) -> dict:
+    """Retourne une copie mdef avec hp/atk/def scalés par niveau joueur + profondeur, avec garde-fous."""
+    m = mdef.copy()
+    L = max(0, player.level - 1)  # le niveau 1 = base
+
+    # Coeffs
+    pl = BALANCE['mon_per_level']
+    pd = BALANCE['mon_per_depth']
+    capL = BALANCE['mon_softcap_level']
+    softM = BALANCE['mon_softcap_mult']
+
+    # Multiplicateurs séparés par stat
+    mult_hp  = _scaled_fraction(1.0, L, pl['hp'],  capL, softM) * (1.0 + depth * pd['hp'])
+    mult_atk = _scaled_fraction(1.0, L, pl['atk'], capL, softM) * (1.0 + depth * pd['atk'])
+    mult_def = _scaled_fraction(1.0, L, pl['def'], capL, softM) * (1.0 + depth * pd['def'])
+
+    if elite:
+        eb = BALANCE['elite_bonus']
+        mult_hp  *= (1.0 + eb['hp'])
+        mult_atk *= (1.0 + eb['atk'])
+        mult_def *= (1.0 + eb['def'])
+
+    # Application
+    m['hp']  = max(1, int(round(m['hp']  * mult_hp)))
+    m['atk'] = max(1, int(round(m['atk'] * mult_atk)))
+    m['def'] = max(0, int(round(m['def'] * mult_def)))
+
+    # ── Garde-fous de jouabilité ──
+    # 1) ATK du monstre ne doit pas dépasser X% des PV max du joueur (pics one-shot)
+    atk_cap = int(player.max_hp * BALANCE['mon_max_atk_vs_player_hp'])
+    if m['atk'] > atk_cap:
+        m['atk'] = atk_cap
+
+    # 2) DEF du monstre ne doit pas annuler quasi tous les dégâts du joueur
+    def_cap = int(max(0, (player.atk + player.temp_buffs.get('atk', 0)) * BALANCE['mon_max_def_vs_player_atk']))
+    if m['def'] > def_cap:
+        m['def'] = def_cap
+
+    return m
+
 # ========================== LOOT & SHOP HELPERS ==========================
 class DummyPlayer:
     def __init__(self): self.equipment={'weapon':None,'armor':None,'accessory':None}
@@ -569,8 +632,7 @@ def compute_damage(attacker, defender, attacker_specs=None):
 
 def fight(player, depth):
     mdef = random.choice(MONSTER_DEFS).copy()
-    scale = 1 + (player.level-1)*0.10 + depth*0.18
-    mdef['hp']=int(max(1,mdef['hp']*scale)); mdef['atk']=int(max(1,mdef['atk']*scale)); mdef['def']=int(max(0,mdef['def']*scale))
+    mdef = scale_monster(mdef, player, depth, elite=False)
     monster = Character(mdef['name'], mdef['hp'], mdef['atk'], mdef['def'], mdef['crit'])
     monster.max_hp = mdef['hp']
     sprite_m = mdef['sprite']
