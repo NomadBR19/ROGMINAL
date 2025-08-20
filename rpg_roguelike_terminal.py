@@ -262,14 +262,14 @@ SPRITES = {
         "  // .=|=. \\",
 
     ],
-    'orc':   [
+    'esprit':   [
         " .-.",
         "(o o) boo!",
         "| O \\",
         " \   \\",
         "  `~~~'",
     ],
-    'troll': [
+    'diable': [
         "   , ,, ,                              ",
         "   | || |    ,/  _____  \.             ",
         "   \_||_/    ||_/     \_||             ",
@@ -434,8 +434,8 @@ MONSTER_DEFS = [
     {'id':'goblin','name':'Gobelin','hp':18,'atk':6,'def':2,'crit':0.04,'xp':10,'gold':6,'sprite':SPRITES['goblin']},
     {'id':'bat','name':'Chauve-souris','hp':10,'atk':4,'def':0,'crit':0.03,'xp':5,'gold':2,'sprite':SPRITES['bat']},
     {'id':'skeleton','name':'Squelette','hp':22,'atk':7,'def':2,'crit':0.05,'xp':12,'gold':8,'sprite':SPRITES['skeleton']},
-    {'id':'orc','name':'Orc','hp':28,'atk':9,'def':3,'crit':0.06,'xp':18,'gold':12,'sprite':SPRITES['orc']},
-    {'id':'troll','name':'Troll','hp':40,'atk':12,'def':5,'crit':0.06,'xp':28,'gold':22,'sprite':SPRITES['troll']},
+    {'id':'esprit','name':'Esprit','hp':28,'atk':9,'def':3,'crit':0.06,'xp':18,'gold':12,'sprite':SPRITES['esprit']},
+    {'id':'diable','name':'Diable','hp':40,'atk':12,'def':5,'crit':0.06,'xp':28,'gold':22,'sprite':SPRITES['diable']},
     {'id':'dragon','name':'Dragonnet','hp':60,'atk':16,'def':6,'crit':0.08,'xp':45,'gold':40,'sprite':SPRITES['dragon']},
 ]
 
@@ -669,8 +669,9 @@ def fight(player, depth):
     monster.max_hp = mdef['hp']
     sprite_m = mdef['sprite']
     p_specs = player.all_specials(); poison_turns=0
-
+    
     while player.is_alive() and monster.is_alive():
+        used_conso = False
         _combat_panel(player, monster, mdef['name'], sprite_m, depth)
         cmd=input('> ').strip()
         defend=False
@@ -681,22 +682,28 @@ def fight(player, depth):
             if p_specs.get('poison_on_hit'): poison_turns = max(poison_turns, 2)
         elif cmd=='2': defend=True; print('Vous vous mettez en garde.')
         elif cmd=='3':
-            cons = player.consumables
-            if not cons:
-                print('Aucun consommable.'); time.sleep(0.6)
+            if used_conso:
+                print("Vous avez déjà utilisé un consommable ce tour."); time.sleep(0.6)
             else:
-                for i, cns in enumerate(cons, 1):
-                    print(f"{i}) {item_summary(cns)}")
+                cons = player.consumables
+                if not cons:
+                    print('Aucun consommable.'); time.sleep(0.6)
+                else:
+                    # lister une seule fois puis lire l’entrée (ton code lisait "s" dans la boucle)
+                    for i, cns in enumerate(cons, 1):
+                        print(f"{i}) {item_summary(cns)}")
                     s = input('Numéro à utiliser: ').strip()
-                if s.isdigit():
-                    i = int(s) - 1
-                    if 0 <= i < len(cons):
-                        cns = cons[i]
-                        if cns.effect == 'heal':
-                            player.heal(cns.power)
-                        elif cns.effect == 'buff_atk':
-                            player.temp_buffs['atk'] += cns.power; player.temp_buffs['turns'] = 3
-                        cons.pop(i)
+                    if s.isdigit():
+                        i = int(s) - 1
+                        if 0 <= i < len(cons):
+                            cns = cons[i]
+                            if cns.effect == 'heal':
+                                player.heal(cns.power)
+                            elif cns.effect == 'buff_atk':
+                                player.temp_buffs['atk'] += cns.power
+                                player.temp_buffs['turns'] = 3
+                            cons.pop(i)
+                            used_conso = True          # ← verrouille pour ce tour
         elif cmd=='4':
             base_cost = max(1, player.max_hp//8 + 2)  # ou ton coût actuel/plus punitif
             cost_mult = p_specs.get("special_cost_mult", 1.0)
@@ -755,7 +762,7 @@ def fight(player, depth):
                     player.consumables.append(cons)
 
             pause()
-            return 'win'
+            return ('win', mdef['id'])
     return 'dead'
 
 # ========================== QUÊTES ==========================
@@ -764,7 +771,7 @@ NPC_NAMES = ['Alia','Borin','Cedric','Dara','Elio','Fara','Gunnar','Hilda','Ilan
 def make_quest(kind, player_level, giver_pos, giver_name, giver_floor):
     qid = random.randint(1000,9999)
     if kind=='slay':
-        target = random.choice(['goblin','skeleton','orc','slime']); amount = random.randint(2,4)
+        target = random.choice(['goblin','skeleton','esprit','slime','diable']); amount = random.randint(2,4)
         reward_xp = 12 + 4*amount + player_level*2; reward_gold = 10 + 5*amount + player_level*2
     else:
         target = 'combats'; amount = random.randint(2,3)
@@ -1185,6 +1192,7 @@ def game_loop():
                 if 0 <= nx < MAP_W and 0 <= ny < MAP_H and f.grid[ny][nx] != WALL:
                     pos = (nx, ny)
                     player.last_move = (dx, dy)
+
                     # Escaliers
                     if f.up and pos==f.up and cur>0:
                         cur-=1; f=floors[cur]; pos=f.down; fatigue=0
@@ -1194,41 +1202,71 @@ def game_loop():
                         if cur>=len(floors): floors.append(Floor(cur))
                         f=floors[cur]; pos=f.up if f.up else f.start; fatigue=0
                         draw_box('Étage', [f"Vous descendez à l'étage {cur}."], width=44); time.sleep(0.5); break
+                    
                     # Événements / Rencontres
                     ev = maybe_trigger_event(player, f.depth)
                     meet = (ev == 'fight') or (pos in f.monsters and random.random() < (0.30 + 0.02*f.depth + min(0.15, fatigue*0.01)))
                     if meet:
                         res = fight(player, f.depth)
-                        if res=='dead': print('Game over.'); return
-                        if res!='fled' and pos in f.monsters: f.monsters.discard(pos)
+                        if res == 'dead':
+                            print('Game over.'); return
+                        if res != 'fled' and pos in f.monsters:
+                            f.monsters.discard(pos)
+
                         # progression quêtes (slay/survive)
-                        for i,q in enumerate(list(player.quests_active)):
-                            if q.type=='slay' and res=='win':
-                                player.quests_active[i] = q._replace(progress=min(q.amount, q.progress+1))
-                            if q.type=='survive' and res=='win':
-                                player.quests_active[i] = q._replace(progress=min(q.amount, q.progress+1))
-                        maybe_autocomplete_quests(player)
+                        status, kill_id = (res if isinstance(res, tuple) else (res, None))
+
+                        if status == 'dead':
+                            print('Game over.'); return
+
+                        if status != 'fled' and pos in f.monsters:
+                            f.monsters.discard(pos)
+
+                        # progression quêtes (slay/survive)
+                        updated = []
+                        for i, q in enumerate(list(player.quests_active)):
+                            if q.type == 'slay' and status == 'win' and kill_id == q.target:
+                                q = q._replace(progress=min(q.amount, q.progress + 1))
+                                updated.append(q)
+                                player.quests_active[i] = q
+                            elif q.type == 'survive' and status == 'win':
+                                q = q._replace(progress=min(q.amount, q.progress + 1))
+                                updated.append(q)
+                                player.quests_active[i] = q
+
+                        if updated:
+                            maybe_autocomplete_quests(player)
                         fatigue = min(50, fatigue+1)
+
+                    # Ramassage d'ITEMS (indépendant des trésors)
                     if pos in f.items:
                         it = random_item(f.depth, player) if random.random() < 0.65 else random_consumable()
                         msg = 'Vous trouvez: ' + item_summary(it)
                         if isinstance(it, Consumable):
                             if len(player.consumables) < player.consumables_limit:
-                                player.consumables.append(it); lines=[msg, "Ajouté aux consommables."]
+                                player.consumables.append(it)
+                                lines = [msg, "Ajouté aux consommables."]
                             else:
-                                lines=[msg, "Sac de consommables plein."]
+                                lines = [msg, "Sac de consommables plein."]
                         else:
                             if len(player.inventory) < player.inventory_limit:
-                                player.inventory.append(it); lines=[msg, "Ajouté à l'inventaire."]
+                                player.inventory.append(it)
+                                lines = [msg, "Ajouté à l'inventaire."]
                             else:
-                                lines=[msg, "Inventaire plein."]
-                            draw_box('Trouvaille', lines, width=84)
-                            maybe_autocomplete_quests(player)
-                            f.items.discard(pos); time.sleep(0.4)
-                        if hasattr(f,'treasures') and pos in f.treasures:
-                            took = open_treasure_choice(player, f.depth)
-                            f.treasures.discard(pos)
-                            maybe_autocomplete_quests(player)
+                                lines = [msg, "Inventaire plein."]
+
+                        # Ces trois lignes doivent être hors des branches conso/objet
+                        draw_box('Trouvaille', lines, width=84)
+                        maybe_autocomplete_quests(player)
+                        f.items.discard(pos)
+                        time.sleep(0.4)
+
+                    # Trésors (⚠️ en-dehors du bloc items !)
+                    if hasattr(f, 'treasures') and pos in f.treasures:
+                        took = open_treasure_choice(player, f.depth)
+                        f.treasures.discard(pos)
+                        # (optionnel) progression de quêtes "survive" après un choix :
+                        maybe_autocomplete_quests(player)
                     if pos in f.shops: print('Un marchand est là. Appuyez sur B pour commercer.')
                     # Élite sur la case actuelle ?
                     if pos in f.elites:
