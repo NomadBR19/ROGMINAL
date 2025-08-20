@@ -385,6 +385,8 @@ class Player(Character):
         self.klass=klass
         self.level=1; self.xp=0; self.gold=40
         self.inventory=[]; self.inventory_limit=14
+        self.consumables = []          # ← sac dédié aux potions/consommables
+        self.consumables_limit = 10
         self.equipment={'weapon':None,'armor':None,'accessory':None}
         self.temp_buffs={'atk':0,'turns':0}
         self.last_move=(0,0)
@@ -575,37 +577,67 @@ def preview_delta(player, it):
 
 def open_inventory(player):
     while True:
-        rows=[]
+        rows = []
+        # --- SECTION OBJETS (équipables & divers) ---
+        rows.append(c("Objets", Ansi.BRIGHT_WHITE))
         if not player.inventory:
-            rows.append('(Inventaire vide)')
+            rows.append("  (aucun)")
         else:
-            for i,it in enumerate(player.inventory,1):
+            for i, it in enumerate(player.inventory, 1):
                 label = item_summary(it)
                 if not isinstance(it, Consumable):
                     label = c(label, rarity_color(it.rarity))
-                rows.append(f"{i}) {label}  {preview_delta(player,it)}")
-        rows.append('')
-        rows.append('Équipement:')
-        for slot,it in player.equipment.items():
+                rows.append(f"{i:>2}) {label}  {preview_delta(player, it)}")
+
+        # --- SECTION CONSOMMABLES (sac dédié) ---
+        rows.append("")
+        rows.append(c("Consommables (non vendables)", Ansi.BRIGHT_WHITE))
+        if not player.consumables:
+            rows.append("  (aucun)")
+        else:
+            for i, cns in enumerate(player.consumables, 1):
+                rows.append(f"c{i:>2}) {item_summary(cns)}")
+
+        # --- Équipement actuel ---
+        rows.append("")
+        rows.append("Équipement:")
+        for slot, it in player.equipment.items():
             rows.append(f"{slot}: {item_summary(it) if it else '—'}")
-        rows.append('')
-        rows.append('Actions: e<num> équiper | u<num> utiliser | d<num> jeter | q retour')
-        box_w = max(120, *(visible_len(r) for r in rows), MAP_W)
-        clear_screen(); draw_box('Inventaire', rows, width=min(box_w, 200))
-        cmd=input('> ').strip().lower()
-        if cmd=='q': break
-        if len(cmd)>=2 and cmd[1:].isdigit():
-            idx=int(cmd[1:])-1
-            if not (0<=idx<len(player.inventory)): continue
-            it=player.inventory[idx]
-            if cmd[0]=='e' and not isinstance(it,Consumable):
-                player.equip(it); player.inventory.pop(idx)
-            elif cmd[0]=='u' and isinstance(it,Consumable):
-                if it.effect=='heal': player.heal(it.power)
-                elif it.effect=='buff_atk': player.temp_buffs['atk']+=it.power; player.temp_buffs['turns']=3
-                player.inventory.pop(idx)
-            elif cmd[0]=='d':
-                player.inventory.pop(idx)
+
+        # --- Aide commandes ---
+        rows.append("")
+        rows.append("Actions : e<num> équiper  | d<num> jeter  | uc<num> utiliser conso  | dc<num> jeter conso  | q retour")
+        clear_screen(); draw_box("Inventaire", rows, width=max(MAP_W, 110))
+        cmd = input("> ").strip().lower()
+
+        if cmd == 'q':
+            break
+
+        # Équiper / jeter OBJETS
+        if len(cmd) >= 2 and cmd[1:].isdigit() and cmd[0] in ('e','d'):
+            idx = int(cmd[1:]) - 1
+            if 0 <= idx < len(player.inventory):
+                it = player.inventory[idx]
+                if cmd[0] == 'e' and not isinstance(it, Consumable):
+                    player.equip(it); player.inventory.pop(idx)
+                elif cmd[0] == 'd':
+                    player.inventory.pop(idx)
+            continue
+
+        # Utiliser / jeter CONSOMMABLES (préfixe 'uc' / 'dc')
+        if (cmd.startswith('uc') or cmd.startswith('dc')) and cmd[2:].isdigit():
+            idx = int(cmd[2:]) - 1
+            if 0 <= idx < len(player.consumables):
+                cns = player.consumables[idx]
+                if cmd.startswith('uc'):
+                    if cns.effect == 'heal':
+                        player.heal(cns.power)
+                    elif cns.effect == 'buff_atk':
+                        player.temp_buffs['atk'] += cns.power; player.temp_buffs['turns'] = 3
+                    player.consumables.pop(idx)
+                else:  # 'dc'
+                    player.consumables.pop(idx)
+            continue
 
 # ========================== COMBAT ==========================
 
@@ -649,18 +681,22 @@ def fight(player, depth):
             if p_specs.get('poison_on_hit'): poison_turns = max(poison_turns, 2)
         elif cmd=='2': defend=True; print('Vous vous mettez en garde.')
         elif cmd=='3':
-            cons=[it for it in player.inventory if isinstance(it,Consumable)]
-            if not cons: print('Aucun consommable.'); time.sleep(0.6)
+            cons = player.consumables
+            if not cons:
+                print('Aucun consommable.'); time.sleep(0.6)
             else:
-                for i,cns in enumerate(cons,1): print(f"{i}) {item_summary(cns)}")
-                s=input('Numéro à utiliser: ').strip()
+                for i, cns in enumerate(cons, 1):
+                    print(f"{i}) {item_summary(cns)}")
+                    s = input('Numéro à utiliser: ').strip()
                 if s.isdigit():
-                    i=int(s)-1
-                    if 0<=i<len(cons):
-                        cns=cons[i]
-                        if cns.effect=='heal': player.heal(cns.power)
-                        elif cns.effect=='buff_atk': player.temp_buffs['atk']+=cns.power; player.temp_buffs['turns']=3
-                        player.inventory.remove(cns)
+                    i = int(s) - 1
+                    if 0 <= i < len(cons):
+                        cns = cons[i]
+                        if cns.effect == 'heal':
+                            player.heal(cns.power)
+                        elif cns.effect == 'buff_atk':
+                            player.temp_buffs['atk'] += cns.power; player.temp_buffs['turns'] = 3
+                        cons.pop(i)
         elif cmd=='4':
             base_cost = max(1, player.max_hp//8 + 2)  # ou ton coût actuel/plus punitif
             cost_mult = p_specs.get("special_cost_mult", 1.0)
@@ -715,8 +751,8 @@ def fight(player, depth):
             if random.random() < BALANCE['loot_cons_chance']:
                 cons = random_consumable()
                 print('Butin:', item_summary(cons))
-                if len(player.inventory) < player.inventory_limit:
-                    player.inventory.append(cons)
+                if len(player.consumables) < player.consumables_limit:
+                    player.consumables.append(cons)
 
             pause()
             return 'win'
@@ -961,11 +997,16 @@ def open_treasure_choice(player, depth):
             idx=int(cmd)-1
             if 0<=idx<len(choices):
                 it=choices[idx]
-                if len(player.inventory)<player.inventory_limit:
-                    player.inventory.append(it)
-                    draw_box('Trésor', [f"Vous prenez: {item_summary(it)}"], width=84); pause()
+                if isinstance(it, Consumable):
+                    if len(player.consumables) < player.consumables_limit:
+                        player.consumables.append(it)
+                    else:
+                        draw_box('Trésor', ["Sac de consommables plein."], width=84); pause(); return True
                 else:
-                    draw_box('Trésor', ["Inventaire plein, impossible de prendre l'objet."], width=84); pause()
+                    if len(player.inventory) < player.inventory_limit:
+                        player.inventory.append(it)
+                    else:
+                        draw_box('Trésor', ["Inventaire plein."], width=84); pause(); return True
                 return True
 
 
@@ -1001,12 +1042,26 @@ def open_shop(player, depth):
         if cmd=='q': break
         if cmd.isdigit():
             idx=int(cmd)-1
-            if 0<=idx<len(stock):
-                it=stock[idx]; price=price_of(it)
-                if player.gold>=price and len(player.inventory)<player.inventory_limit:
-                    player.gold-=price; player.inventory.append(it); stock.pop(idx)
-                else:
-                    print('Or insuffisant ou inventaire plein.'); time.sleep(0.8)
+            if 0 <= idx < len(stock):
+                    it = stock[idx]
+                    price = price_of(it)
+                    if player.gold < price:
+                        print('Or insuffisant.'); time.sleep(0.8); continue
+
+                    if isinstance(it, Consumable):
+                        # sac dédié aux consommables
+                        if len(player.consumables) >= player.consumables_limit:
+                            print('Sac de consommables plein.'); time.sleep(0.8); continue
+                        player.gold -= price
+                        player.consumables.append(it)
+                        stock.pop(idx)
+                    else:
+                        # inventaire normal
+                        if len(player.inventory) >= player.inventory_limit:
+                            print('Inventaire plein.'); time.sleep(0.8); continue
+                        player.gold -= price
+                        player.inventory.append(it)
+                        stock.pop(idx)
         elif cmd.startswith('v') and cmd[1:].isdigit():
             idx=int(cmd[1:])-1
             if 0<=idx<len(player.inventory):
@@ -1152,20 +1207,25 @@ def game_loop():
                         maybe_autocomplete_quests(player)
                         fatigue = min(50, fatigue+1)
                     if pos in f.items:
-                        it = random_item(f.depth, player) if random.random()<0.65 else random_consumable()
+                        it = random_item(f.depth, player) if random.random() < 0.65 else random_consumable()
                         msg = 'Vous trouvez: ' + item_summary(it)
-                        if len(player.inventory)<player.inventory_limit:
-                            player.inventory.append(it)
-                            lines=[msg, "Ajouté à l'inventaire."]
+                        if isinstance(it, Consumable):
+                            if len(player.consumables) < player.consumables_limit:
+                                player.consumables.append(it); lines=[msg, "Ajouté aux consommables."]
+                            else:
+                                lines=[msg, "Sac de consommables plein."]
                         else:
-                            lines=[msg, 'Inventaire plein.']
-                        draw_box('Trouvaille', lines, width=84)
-                        maybe_autocomplete_quests(player)
-                        f.items.discard(pos); time.sleep(0.4)
-                    if hasattr(f,'treasures') and pos in f.treasures:
-                        took = open_treasure_choice(player, f.depth)
-                        f.treasures.discard(pos)
-                        maybe_autocomplete_quests(player)
+                            if len(player.inventory) < player.inventory_limit:
+                                player.inventory.append(it); lines=[msg, "Ajouté à l'inventaire."]
+                            else:
+                                lines=[msg, "Inventaire plein."]
+                            draw_box('Trouvaille', lines, width=84)
+                            maybe_autocomplete_quests(player)
+                            f.items.discard(pos); time.sleep(0.4)
+                        if hasattr(f,'treasures') and pos in f.treasures:
+                            took = open_treasure_choice(player, f.depth)
+                            f.treasures.discard(pos)
+                            maybe_autocomplete_quests(player)
                     if pos in f.shops: print('Un marchand est là. Appuyez sur B pour commercer.')
                     # Élite sur la case actuelle ?
                     if pos in f.elites:
