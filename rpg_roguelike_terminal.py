@@ -308,18 +308,63 @@ COMMON_ITEMS = [
     Item('Épée rouillée','weapon',0,2,0,0.00,'Commun','Vieille lame.',None),
     Item('Bouclier bois','armor',4,0,2,0.0,'Commun','Bouclier simple.',None),
     Item('Anneau terne','accessory',3,1,0,0.00,'Commun','Petit boost.',None),
+    Item('Couteau émoussé','weapon',0,1,0,0.00,'Commun','Mieux que rien.',None),
+    Item('Massette légère','weapon',0,2,0,0.00,'Commun','Cogne un peu.',None),
+    Item('Bâton fendu','weapon',0,2,0,0.01,'Commun','Une once de magie.',None),
+    Item('Plastron de tissu','armor',3,0,1,0.00,'Commun','Protection minimale.',None),
+    Item('Armature de cuir','armor',5,0,1,0.00,'Commun','Souple et discret.',None),
+    Item('Gants rêches','accessory',2,1,0,0.00,'Commun','Mieux saisir l’arme.',None),
+    Item('Bottes usées','accessory',3,0,0,0.00,'Commun','Un peu de confort.',None),
+    Item('Broche terne','accessory',2,0,0,0.01,'Commun','Légère chance.',None),
+    Item('Bouclier cabossé','armor',6,0,2,0.00,'Commun','A déjà servi.',None),
+    Item('Pavois court','armor',4,0,2,0.00,'Commun','Facile à manier.',None),
+    Item('Lame courte','weapon',0,2,0,0.02,'Commun','Rapide.',None),
+    Item('Épieu paysan','weapon',0,3,0,0.00,'Commun','Long et rustique.',None),
+    Item('Chapeau feutre','accessory',1,0,0,0.01,'Commun','Un peu de panache.',None),
+    Item('Bracelet de corde','accessory',2,0,0,0.00,'Commun','Sans propriétés.',None),
+    Item('Ceinture épaisse','accessory',4,0,0,0.00,'Commun','Maintient le torse.',None),
 ]
 RARE_ITEMS = [
     Item('Épée équilibrée','weapon',0,5,0,0.02,'Rare','Bon compromis.',None),
     Item('Cuirasse cloutée','armor',8,0,3,0.0,'Rare','Solide.',None),
     Item('Anneau de force','accessory',0,3,0,0.00,'Rare','+ATK.',None),
-    Item("Cape d'ombre",'armor',0,0,1,0.10,'Rare','+Critique.',None),
+    Item("Cape d'ombre",'armor',0,0,1,0.20,'Rare','+Critique.',None),
+    Item('Hache équilibrée','weapon',0,6,0,0.00,'Rare','Bonne prise en main.',None),
+    Item('Rapière fine','weapon',0,5,0,0.03,'Rare','Perce les failles.',None),
+    Item('Massue cloutée','weapon',0,6,0,0.00,'Rare','Écrase bien.',None),
+    Item('Cotte rivetée','armor',9,0,3,0.00,'Rare','Robuste.',None),
+    Item('Bouclier rond','armor',10,0,3,0.00,'Rare','Compact.',None),
+    Item('Brassards d’acier','armor',6,0,2,0.00,'Rare','Protègent les avants-bras.',None),
+    Item('Amulette d’adresse','accessory',0,2,0,0.04,'Rare','Aiguise la précision.',None),
+    Item('Anneau d’onguent','accessory',6,0,0,0.00,'Rare','Des soins plus sûrs.',None),
+    Item('Bottes renforcées','accessory',5,0,1,0.00,'Rare','Bien assises.',None),
+    Item('Targe nervurée','armor',8,0,4,0.00,'Rare','Dévie les coups.',None),
+    Item('Épée large','weapon',0,6,0,0.01,'Rare','Tranche en arc.',None),
+    Item('Bâton runique','weapon',0,5,0,0.04,'Rare','Canalise la magie.',None),
+    Item('Cape à capuche','armor',4,0,2,0.03,'Rare','Se fond dans l’ombre.',None),
+    Item('Ceinturon solide','accessory',8,0,0,0.00,'Rare','Bon maintien.',None),
+    Item('Médaillon poli','accessory',4,1,0,0.02,'Rare','Brille légèrement.',None),
 ]
 EPIC_ITEMS = [
     Item('Épée du vent','weapon',0,7,0,0.06,'Épique','Légère, précise.',{'dodge':0.05}),
     Item('Armure runique','armor',16,0,6,0.02,'Épique','Absorbe un peu.',{'regen':5}),
     Item('Griffe du destin','accessory',0,0,0,0.10,'Épique','Chance critique élevée.',None),
-    Item('Lame vampirique','weapon',0,6,0,0.00,'Épique','Draine la vie.',{'lifesteal':0.25}),
+    Item('Lame vampirique','weapon',0,6,0,0.00,'Épique','Draine la vie.',{'lifesteal':0.20}),
+    Item('Épée tempête','weapon',0,8,0,0.06,'Épique','Déchaîne les cieux.',{'dodge':0.03}),
+    Item('Lame des sables','weapon',0,7,0,0.08,'Épique','Coupe en tourbillon.',None),
+    Item('Marteau tellurique','weapon',0,9,0,0.00,'Épique','Vibre à l’impact.',None),
+    Item('Armure écailleuse','armor',14,0,7,0.01,'Épique','Écailles imbriquées.',None),
+    Item('Haubert béni','armor',18,0,5,0.02,'Épique','Chants gravés.',{'regen':3}),
+    Item('Bouclier solaire','armor',10,0,8,0.00,'Épique','Renvoie l’éclat.',{'thorns':2}),
+    Item('Anneau d’éclair','accessory',0,4,0,0.06,'Épique','Nerfs en éveil.',None),
+    Item('Amulette de vigueur','accessory',14,0,0,0.02,'Épique','Force vitale accrue.',None),
+    Item('Gants de prédateur','accessory',0,5,0,0.00,'Épique','Prise mortelle.',None),
+    Item('Épée polaire','weapon',0,7,0,0.05,'Épique','Froid mordant.',None),
+    Item('Cuissots de granite','armor',12,0,6,0.00,'Épique','Base inébranlable.',None),
+    Item('Cape de traque','armor',8,0,4,0.05,'Épique','Trajets silencieux.',{'dodge':0.04}),
+    Item('Griffe d’obsidienne','accessory',0,0,0,0.12,'Épique','Tranchant absolu.',None),
+    Item('Pendentif vital','accessory',18,0,0,0.00,'Épique','Courage du cœur.',{'regen':2}),
+    Item('Bottes du vent','accessory',6,0,3,0.00,'Épique','Foulée vive.',{'dodge':0.03}),
 ]
 LEGENDARY_ITEMS = [
     Item('Couronne ancienne','accessory',20,2,2,0.05,'Légendaire','Attire les ennuis.',{'unlucky':0.10}),
@@ -327,18 +372,43 @@ LEGENDARY_ITEMS = [
     Item('Épée de chaos','weapon',0,10,0,0.0,'Légendaire','Imprévisible.',{'chaos':True}),
     Item('Bouclier à pointes','armor',8,0,6,0.0,'Légendaire','Ça pique.',{'thorns':3}),
     Item('Bottes de plomb','accessory',12,0,4,-0.06,'Légendaire','Très lourdes.',{'heavy':True}),
+    Item('Épée maîtresse','weapon',0,11,0,0.05,'Légendaire','Domine le duel.',None),
+    Item('Tranche-soleil','weapon',0,12,0,0.02,'Légendaire','Arc aveuglant.',None),
+    Item('Marteau des rois','weapon',0,13,0,0.00,'Légendaire','Poids de l’histoire.',None),
+    Item('Heaume de l’aube','armor',16,0,8,0.02,'Légendaire','Protège l’esprit.',None),
+    Item('Cuirasse sanctifiée','armor',20,0,9,0.01,'Légendaire','Bénédiction antique.',{'regen':4}),
+    Item('Égide écarlate','armor',14,0,10,0.00,'Légendaire','Mur vivant.',{'thorns':4}),
+    Item('Anneau du phénix','accessory',10,3,2,0.06,'Légendaire','Cendre et renouveau.',None),
+    Item('Sceau royal','accessory',15,2,3,0.05,'Légendaire','Autorité gravée.',None),
+    Item('Bottes astrales','accessory',10,0,5,0.02,'Légendaire','Pas irréels.',{'dodge':0.05}),
+    Item('Lame hurlante','weapon',0,10,0,0.08,'Légendaire','Cri dans l’acier.',None),
+    Item('Plastron du colosse','armor',24,0,10,0.00,'Légendaire','Titan d’acier.',None),
+    Item('Bouclier des épines','armor',12,0,9,0.00,'Légendaire','Impossible à enlacer.',{'thorns':5}),
+    Item('Amulette du destin','accessory',8,0,0,0.12,'Légendaire','Faveur capricieuse.',None),
+    Item('Couronne du zénith','accessory',22,3,3,0.05,'Légendaire','Apogée du pouvoir.',None),
+    Item('Épée des millénaires','weapon',0,14,0,0.04,'Légendaire','A vu des empires naître.',None),
 ]
 CURSED_ODDITIES = [
     Item('Anneau maudit','accessory',-12,5,0,0.00,'Étrange','Puissant mais dangereux.',{'cursed':True}),
     Item('Amulette du sang','accessory',-5,0,0,0.08,'Étrange','Le sang appelle le sang.',{'vampirism':8}),
     Item('Talisman toxique','accessory',0,0,0,0.00,'Étrange','Chaque coup empoisonne.',{'poison_on_hit':2}),
     Item('Écaille noire','armor',6,0,2,0.0,'Étrange','Difficile à retirer.',{'cursed':True,'dodge':0.03}),
-    Item("Lame de verre", "weapon", 0, 8, 0, 0.08, "Étrange","Dégâts monstrueux, mais tu encaisses pire.",{"glass": True, "vuln_mult": 1.2}),"Plus tes PV sont bas, plus tu frappes fort.",{"berserk": 0.5},  # <=50% PV : +50% dégâts de base
-    Item("Bourse maudite", "accessory", 6, 0, -2, -0.02, "Étrange","L or coule... mais la chance te fuit.",{"greed": 0.30, "unlucky": 0.08}),  # +30% or, baisse des raretés
-    Item("Cape de brume", "armor", -6, 0, 2, 0.00, "Étrange","Tu vois plus loin à travers la brume.",{"fov_bonus": 2, "unlucky": 0.05}),
-    Item("Épine noire", "accessory", -4, 0, 0, 0.00, "Étrange","Blesse ceux qui te frappent. Prix du sang.",{"thorns": 5, "bleed_self": 2}),
-    Item("Sceau du pacte", "accessory", 0, 2, 0, 0.00, "Étrange","Ta compétence dévore tes PV, mais ravage l ennemi.",{"special_cost_mult": 1.8, "special_dmg_mult": 1.4}),
-    Item("Plastron plombé", "armor", 12, 0, 7, -0.04, "Étrange","Très solide, mais chaque impact résonne.",{"frail": 2}),  # +2 dégâts plats subis
+    Item('Bourse maudite','accessory',6,0,-2,-0.02,'Étrange',"L’or coule... mais la chance te fuit.",{'greed':0.30,'unlucky':0.08}),
+    Item('Cape de brume','armor',-6,0,2,0.00,'Étrange','Tu vois plus loin à travers la brume.',{'fov_bonus':2,'unlucky':0.05}),
+    Item('Épine noire','accessory',-4,0,0,0.00,'Étrange','Blesse ceux qui te frappent. Prix du sang.',{'thorns':5,'bleed_self':2}),
+    Item('Sceau du pacte','accessory',0,2,0,0.00,'Étrange','Ta compétence dévore tes PV, mais ravage l’ennemi.',{'special_cost_mult':1.8,'special_dmg_mult':1.4}),
+    Item('Masque triste','accessory',-6,3,0,0.00,'Étrange','Force mélancolique.',{'unlucky':0.05}),
+    Item('Bottes ferrées','accessory',8,0,3,-0.05,'Étrange','Chaque pas résonne.',{'heavy':True}),
+    Item('Lame sanglante','weapon',-4,9,0,0.00,'Étrange','Réclame un tribut.',{'bleed_self':3}),
+    Item('Cape souillée','armor',-8,0,3,0.00,'Étrange','Repousse les rares fortunes.',{'unlucky':0.1}),
+    Item('Anneau du paria','accessory',-5,2,0,0.06,'Étrange','Acéré mais maudit.',{'unlucky':0.08}),
+    Item('Sablier fêlé','accessory',-6,0,0,0.00,'Étrange','Temps contre toi.',{'special_cost_mult':1.4,'special_dmg_mult':1.2}),
+    Item('Parchemin de rage','accessory',-8,4,0,0.00,'Étrange','Furie contrôlée.',{'berserk':0.5}),
+    Item('Lanterne brumeuse','accessory',-4,0,0,0.00,'Étrange','Vois mais perds la chance.',{'fov_bonus':2,'unlucky':0.06}),
+    Item('Gantelet d’épines','armor',-2,0,4,0.00,'Étrange','Blesse qui frappe.',{'thorns':4}),
+    Item('Pacte gris','accessory',0,3,0,0.00,'Étrange','Puissance à crédit.',{'special_cost_mult':1.6,'special_dmg_mult':1.3}),
+    Item('Talisman de peste','accessory',-6,0,0,0.00,'Étrange','Tout coup infecte.',{'poison_on_hit':3}),
+    Item('Amulette de l’avare','accessory',-2,0,0,-0.04,'Étrange','L’or ou la chance ?',{ 'greed':0.4,'unlucky':0.12 }),
 ]
 ALL_ITEMS = COMMON_ITEMS + RARE_ITEMS + EPIC_ITEMS + LEGENDARY_ITEMS + CURSED_ODDITIES
 
@@ -360,9 +430,9 @@ ALL_ITEMS = _validate_item_pool()
 
 CONSUMABLE_POOL = [
     Consumable('Potion de soin','heal',24,'Commun','Rend 24 PV.'),
-    Consumable('Élixir majeur','heal',50,'Rare','Rend beaucoup de PV.'),
+    Consumable('Élixir majeur','heal',65,'Rare','Rend beaucoup de PV.'),
     Consumable('Potion de rage','buff_atk',4,'Rare','ATK +4 (3 tours).'),
-    Consumable('Flasque étrange','heal',-12,'Étrange','Risque de vous blesser !'),
+    Consumable('Pierre de rappel','flee','', 'Rare', 'Permet de fuir un combat.'),
 ]
 
 RARITY_WEIGHTS_BASE = {'Commun':72,'Rare':18,'Épique':7,'Légendaire':1,'Étrange':1}
@@ -634,6 +704,9 @@ def open_inventory(player):
                         player.heal(cns.power)
                     elif cns.effect == 'buff_atk':
                         player.temp_buffs['atk'] += cns.power; player.temp_buffs['turns'] = 3
+                    elif cns.effect == 'flee':
+                        print("Vous utilisez un fumigène pour fuir le combat.")
+                        return 'fled'
                     player.consumables.pop(idx)
                 else:  # 'dc'
                     player.consumables.pop(idx)
