@@ -1,4 +1,4 @@
-"""
+""""""
 RPG / Roguelike terminal — Quêtes + Marchand bi‑panneau + Difficulté progressive
 - Déplacements **ZQSD/WASD uniquement** (➜ pas de diagonales)
 - **PNJ** avec **quêtes** (chasse/collecte/survie) et **journal (J)**
@@ -618,9 +618,9 @@ def random_consumable(): return random.choice(CONSUMABLE_POOL)
 
 def price_of(it):
     if isinstance(it, Consumable):
-        return {'Commun':12,'Rare':28,'Épique':55,'Légendaire':120,'Étrange':70}.get(it.rarity,20)
+        return {'Commun':12,'Rare':55,'Épique':90,'Légendaire':180,'Étrange':70}.get(it.rarity,20)
     score = it.hp_bonus*1.2 + it.atk_bonus*4 + it.def_bonus*3 + it.crit_bonus*60
-    rar = {'Commun':1.0,'Rare':1.5,'Épique':2.3,'Légendaire':3.5,'Étrange':2.7}.get(it.rarity,1.0)
+    rar = {'Commun':1.0,'Rare':2.7,'Épique':3.5,'Légendaire':4.5,'Étrange':2.7}.get(it.rarity,1.0)
     spec = 1.0 + (0.3*(len(it.special) if it.special else 0))
     return int(max(8, score*rar*spec))
 
@@ -1386,3 +1386,5 @@ if __name__=='__main__':
         game_loop()
     except KeyboardInterrupt:
         print('\nInterrompu. Au revoir !'); sys.exit(0)
+
+
