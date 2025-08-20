@@ -163,6 +163,34 @@ STAIR_DOWN, STAIR_UP = '>', '<'
 TREASURE_ICON = 'T'
 ELITE_ICON = 'Ω'
 
+# ========================== BALANCE ==========================
+BALANCE = {
+    # COMBAT
+    'combat_xp_mult':   0.60,   # 60% de l'XP habituelle
+    'combat_gold_mult': 0.70,   # 70% de l'or habituel
+
+    # LOOT après combat
+    'loot_item_chance': 0.45,   # au lieu de 0.70
+    'loot_cons_chance': 0.35,   # au lieu de 0.55
+
+    # CARTE
+    'map_items_per_floor': 3,   # au lieu de 6
+
+    # PNJ par étage (peut être 0)
+    'npcs_min': 0,
+    'npcs_max': 2,              # anciennement 2 fixes
+
+    # NIVEAUX
+    'level_xp_threshold': 40,   # au lieu de 30 (plus lent)
+    'level_hp_gain': 3,         # au lieu de 6
+    'level_atk_gain': 1,        # au lieu de 2
+    'level_def_gain': 0,        # au lieu de 1
+
+    # QUÊTES (récompenses)
+    'quest_xp_mult':   0.70,
+    'quest_gold_mult': 0.70,
+}
+
 # Déplacements: ZQSD/WASD seulement
 DIR_KEYS = {
     'z': (0,-1), 'w': (0,-1),
@@ -211,12 +239,12 @@ SPRITES = {
         "/.-'       `\(-V-)/`       `-.\\",
     ],
     'skeleton':[
-        "      .-."
-        "     (o.o)"
-        "      |=|"
-        "     __|__"
-        "   //.=|=.\\"
-        "  // .=|=. \\"
+        "      .-.",
+        "     (o.o)",
+        "      |=|",
+        "     __|__",
+        "   //.=|=.\\",
+        "  // .=|=. \\",
 
     ],
     'orc':   [
@@ -372,12 +400,17 @@ class Player(Character):
             f"DEF:{self.defense} CRIT:{self.crit:.2f} Or:{self.gold}\n"
             f"Equip: W:{eq['weapon']} A:{eq['armor']} Acc:{eq['accessory']}"
         )
-    def gain_xp(self,amount):
-        self.xp+=amount
-        while self.xp>=30:
-            self.xp-=30; self.level+=1
-            self.max_hp+=6; self.atk+=2; self.defense+=1; self.hp=self.max_hp
-            print(c(f"*** Niveau {self.level}! Stats améliorées. ***", Ansi.BRIGHT_YELLOW)); time.sleep(0.6)
+    def gain_xp(self, amount):
+        self.xp += amount
+        while self.xp >= BALANCE['level_xp_threshold']:
+            self.xp -= BALANCE['level_xp_threshold']
+            self.level += 1
+            self.max_hp += BALANCE['level_hp_gain']
+            self.atk    += BALANCE['level_atk_gain']
+            self.defense+= BALANCE['level_def_gain']
+            self.hp = self.max_hp
+            print(c(f"*** Niveau {self.level}! Stats +HP:{BALANCE['level_hp_gain']} +ATK:{BALANCE['level_atk_gain']} +DEF:{BALANCE['level_def_gain']} ***", Ansi.BRIGHT_YELLOW))
+            time.sleep(0.6)
 
 MONSTER_DEFS = [
     {'id':'slime','name':'Slime','hp':12,'atk':3,'def':1,'crit':0.02,'xp':6,'gold':3,'sprite':SPRITES['slime']},
@@ -601,27 +634,30 @@ def fight(player, depth):
             if player.temp_buffs['turns']==0: player.temp_buffs['atk']=0
         time.sleep(0.6)
 
-    if monster.hp<=0:
-        print(c('Victoire !', Ansi.BRIGHT_GREEN))
-        xp_gain   = int((mdef['xp']   + monster.max_hp//4) * 0.7)  # nerf 30%
-        gold_gain = int((mdef['gold'] + random.randint(0, max(1, monster.max_hp//6))) * 0.7)
+        if monster.hp <= 0:
+            print(c('Victoire !', Ansi.BRIGHT_GREEN))
+            xp_gain   = int((mdef['xp']   + monster.max_hp//4) * BALANCE['combat_xp_mult'])
+            gold_gain = int((mdef['gold'] + random.randint(0, max(1, monster.max_hp//6))) * BALANCE['combat_gold_mult'])
+            player.gain_xp(xp_gain)
+            player.gold += gold_gain
+            print(f"+{xp_gain} XP, +{gold_gain} or")
 
-        player.gain_xp(xp_gain)
-        player.gold += gold_gain
-        print(f"+{xp_gain} XP, +{gold_gain} or")
-        if p_specs.get("greed", 0):
-            gold_gain = int(gold_gain * (1.0 + p_specs["greed"]))
-        if random.random()<0.7:
-            item = random_item(depth, player); print('Butin:', item_summary(item))
-            if len(player.inventory)<player.inventory_limit: player.inventory.append(item)
-        if random.random()<0.55:
-            cons = random_consumable(); print('Butin:', item_summary(cons))
-            if len(player.inventory)<player.inventory_limit: player.inventory.append(cons)
-        if p_specs.get("bleed_self", 0):
-            bleed = int(p_specs["bleed_self"])
-            player.take_damage(bleed)
-            print(c(f"Le sang coule... -{bleed} PV.", Ansi.BRIGHT_RED))
-        pause(); return 'win'
+            # Drop d'objet (indépendant)
+            if random.random() < BALANCE['loot_item_chance']:
+                item = random_item(depth, player)
+                print('Butin:', item_summary(item))
+                if len(player.inventory) < player.inventory_limit:
+                    player.inventory.append(item)
+
+            # Drop de consommable (indépendant de l'objet)
+            if random.random() < BALANCE['loot_cons_chance']:
+                cons = random_consumable()
+                print('Butin:', item_summary(cons))
+                if len(player.inventory) < player.inventory_limit:
+                    player.inventory.append(cons)
+
+            pause()
+            return 'win'
     return 'dead'
 
 # ========================== QUÊTES ==========================
@@ -635,6 +671,8 @@ def make_quest(kind, player_level, giver_pos, giver_name, giver_floor):
     else:
         target = 'combats'; amount = random.randint(2,3)
         reward_xp = 14 + 6*amount + player_level*2; reward_gold = 12 + 4*amount + player_level*2
+    reward_xp   = int(reward_xp   * BALANCE['quest_xp_mult'])
+    reward_gold = int(reward_gold * BALANCE['quest_gold_mult'])
     return Quest(qid, kind, target, amount, 0, giver_floor, giver_pos, giver_name, reward_xp, reward_gold, 'Active')
 
 def maybe_autocomplete_quests(player):
@@ -684,12 +722,15 @@ class Floor:
         self.up = None if depth==0 else self._far_floor_pos(self.start, min_dist=18, occupied=occ)
         if self.up: occ.add(self.up)
         self.down = self._far_floor_pos(self.up or self.start, min_dist=20, occupied=occ); occ.add(self.down)
+
         # PNJ avec quêtes
         self.npcs = {}
-        for _ in range(2):
+        npc_count = random.randint(BALANCE['npcs_min'], BALANCE['npcs_max'])
+        for _ in range(npc_count):
             pos = self._random_floor_pos(occ); occ.add(pos)
             name = random.choice(NPC_NAMES); kind = random.choice(['slay','survive'])
             self.npcs[pos] = {'name': name, 'quest': make_quest(kind, depth, pos, name, depth)}
+
         # Shops
         self.shops=set()
         if random.random()<0.5 or depth%2==0:
@@ -698,7 +739,11 @@ class Floor:
         self.monsters=set()
         for _ in range(8+depth*2): pos=self._random_floor_pos(occ); occ.add(pos); self.monsters.add(pos)
         self.items=set()
-        for _ in range(6): pos=self._random_floor_pos(occ); occ.add(pos); self.items.add(pos)
+        self.items = set()
+        # Items aléatoires, au moins 1 par étage
+        for _ in range(BALANCE['map_items_per_floor']):
+            pos = self._random_floor_pos(occ); occ.add(pos); self.items.add(pos)
+
         # Trésors (au moins 1 par étage)
         self.treasures=set()
         tpos = self._far_floor_pos(self.start, min_dist=10, occupied=occ)
