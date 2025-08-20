@@ -1,4 +1,4 @@
-""""""
+"""
 RPG / Roguelike terminal — Quêtes + Marchand bi‑panneau + Difficulté progressive
 - Déplacements **ZQSD/WASD uniquement** (➜ pas de diagonales)
 - **PNJ** avec **quêtes** (chasse/collecte/survie) et **journal (J)**
@@ -11,7 +11,7 @@ Lancez : python rpg_roguelike_terminal.py
 Options : --test (lance des tests rapides)
 """
 
-import os, sys, time, random, re, ctypes
+import os, sys, time, random, re, ctypes, math
 from collections import namedtuple, deque
 
 if os.name == 'nt':
@@ -85,6 +85,7 @@ class Ansi:
     BRIGHT_BLUE = "\x1b[94m"; BRIGHT_MAGENTA = "\x1b[95m"; BRIGHT_CYAN = "\x1b[96m"; BRIGHT_WHITE = "\x1b[97m"
 
 SUPPORTS_ANSI = True
+SHOW_SIDE_SPRITE = True
 
 def enable_windows_ansi():
     """Active l'affichage ANSI sous Windows 10+"""
@@ -155,6 +156,40 @@ def draw_box(title: str, lines, width: int | None = None):
             print(c('│', Ansi.BRIGHT_WHITE) + part + ' '*pad + c('│', Ansi.BRIGHT_WHITE))
     print(c(bot, Ansi.BRIGHT_WHITE))
 
+# ========================== RENDU DU PERSONNAGE ==========================
+
+def _tint_line_red(line: str, strong=False):
+    # teinte toute la ligne ; strong = plus vif
+    color = Ansi.BRIGHT_RED if strong else Ansi.RED
+    return c(line, color)
+
+def colorize_sprite_by_hp(sprite_lines, hp, max_hp):
+    """
+    Colore le sprite du BAS vers le HAUT en rouge selon la proportion de PV perdus.
+    Plus on a peu de PV, plus de lignes en bas deviennent rouges (et les plus basses en BRIGHT_RED).
+    """
+    if max_hp <= 0:
+        frac_lost = 1.0
+    else:
+        frac_lost = max(0.0, min(1.0, 1.0 - (hp / max_hp)))
+
+    h = len(sprite_lines)
+    # nb de lignes à teinter depuis le BAS (>= 0)
+    red_rows = int(math.ceil(frac_lost * h))
+
+    out = []
+    for i, raw in enumerate(sprite_lines):
+        # i = 0 en haut, h-1 en bas -> on teinte si i >= h - red_rows
+        if i >= h - red_rows and red_rows > 0:
+            # intensité : les 1/3 lignes les plus basses = bright
+            # calcule la "profondeur" dans la zone rouge (0 en haut de la zone rouge, 1 tout en bas)
+            depth = (i - (h - red_rows)) / max(1, red_rows - 1)
+            strong = depth > 0.66
+            out.append(_tint_line_red(raw, strong=strong))
+        else:
+            out.append(raw)  # pas de teinte
+    return out
+
 # ========================== PARAMÈTRES ==========================
 MAP_W, MAP_H = 48, 20
 FLOOR, WALL = '·', '#'
@@ -204,6 +239,9 @@ BALANCE = {
     # Garde-fous de jouabilité (post-ajustement)
     'mon_max_atk_vs_player_hp': 0.45,  # ATK monstre ≤ 45% des PV max du joueur
     'mon_max_def_vs_player_atk': 0.85, # DEF monstre ≤ 85% de l’ATK du joueur (sinon combats trop longs)
+
+    # Soin de 50% des PV max à chaque montée de niveau
+    'level_heal_ratio': 0.50,
 }
 
 # Déplacements: ZQSD/WASD seulement
@@ -495,8 +533,12 @@ class Player(Character):
             self.max_hp += BALANCE['level_hp_gain']
             self.atk    += BALANCE['level_atk_gain']
             self.defense+= BALANCE['level_def_gain']
-            self.hp = self.max_hp
-            print(c(f"*** Niveau {self.level}! Stats +HP:{BALANCE['level_hp_gain']} +ATK:{BALANCE['level_atk_gain']} +DEF:{BALANCE['level_def_gain']} ***", Ansi.BRIGHT_YELLOW))
+
+            # Soin partiel à chaque montée de niveau
+            heal = int(self.max_hp * BALANCE.get('level_heal_ratio', 0.50))
+            self.hp = min(self.max_hp, self.hp + heal)
+
+            print(c(f"*** Niveau {self.level}! +HP:{BALANCE['level_hp_gain']} "f"+ATK:{BALANCE['level_atk_gain']} +DEF:{BALANCE['level_def_gain']}"f"(+{heal} PV) ***", Ansi.BRIGHT_YELLOW))
             time.sleep(0.6)
 
 MONSTER_DEFS = [
@@ -990,6 +1032,15 @@ class Floor:
 
 # ========================== RENDU & FOG ==========================
 
+def box_sprite(sprite_lines):
+    if not sprite_lines:
+        return []
+    w = len(sprite_lines[0])
+    top = c('┌' + '─'*w + '┐', Ansi.BRIGHT_WHITE)
+    bot = c('└' + '─'*w + '┘', Ansi.BRIGHT_WHITE)
+    body = [c('│', Ansi.BRIGHT_WHITE) + line + c('│', Ansi.BRIGHT_WHITE) for line in sprite_lines]
+    return [top] + body + [bot]
+
 def _visible_cells(floor: Floor, player_pos, radius=8):
     px,py = player_pos
     vis=set()
@@ -1022,6 +1073,12 @@ def render_map(floor, player_pos, player, fatigue):
     pad = max(0, MAP_W - len(title))
     print(c('│', Ansi.BRIGHT_WHITE) + c(title + ' '*pad, Ansi.BRIGHT_YELLOW) + c('│', Ansi.BRIGHT_WHITE))
     print(c('├' + '─'*MAP_W + '┤', Ansi.BRIGHT_WHITE))
+
+    spr = player.sprite if getattr(player, 'sprite', None) else SPRITES.get('knight', [])
+    spr_colored = colorize_sprite_by_hp(spr, player.hp, player.max_hp)
+    spr_boxed   = box_sprite(spr_colored)
+    spr_h = len(spr_boxed)
+
     for y in range(MAP_H):
         row=''
         for x in range(MAP_W):
@@ -1052,7 +1109,20 @@ def render_map(floor, player_pos, player, fatigue):
             else:
                 # zone connue mais non visible : terrain seulement, en atténué
                 row += (c('·', Ansi.DIM) if ch==FLOOR else c('#', Ansi.BRIGHT_BLACK))
-        print(c('│', Ansi.BRIGHT_WHITE) + row + c('│', Ansi.BRIGHT_WHITE))
+            side = ''
+        # Affichage du sprite du joueur à côté de la carte    
+        if SHOW_SIDE_SPRITE:
+            spr = player.sprite if getattr(player, 'sprite', None) else SPRITES.get('knight', [])
+            spr_colored = colorize_sprite_by_hp(spr, player.hp, player.max_hp)
+            spr_h = len(spr_colored)
+            spr_w = len(spr_colored[0]) if spr_colored else 0
+            # centrage vertical du sprite par rapport à la carte
+            top_off = max(0, (MAP_H - spr_h) // 2)
+            if top_off <= y < top_off + spr_h:
+                side = '  ' + spr_colored[y - top_off]  # 2 espaces puis la ligne du sprite
+            else:
+                side = '  ' + ' ' * spr_w
+        print(c('│', Ansi.BRIGHT_WHITE) + row + c('│', Ansi.BRIGHT_WHITE)+ (side if SHOW_SIDE_SPRITE else ''))
     print(c('└' + '─' * MAP_W + '┘', Ansi.BRIGHT_WHITE))
     print(c('[ZQSD/WASD] déplacer • E parler/valider • B boutique (sur $) • J journal • I inventaire • X quitter', Ansi.BRIGHT_BLACK))
     print(player.stats_summary())
@@ -1386,5 +1456,3 @@ if __name__=='__main__':
         game_loop()
     except KeyboardInterrupt:
         print('\nInterrompu. Au revoir !'); sys.exit(0)
-
-
