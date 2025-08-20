@@ -1086,20 +1086,23 @@ def parse_move(cmd, last_dir):
 
 def title_menu():
     art = [
-        r"██████╗  ██████╗  ██████╗ ███╗   ███╗██╗███╗   ██╗ █████╗ ██╗     ",
-        r"██╔══██╗██╔═══██╗██╔═══██╗████╗ ████║██║████╗  ██║██╔══██╗██║     ",
-        r"██████╔╝██║   ██║██║   ██║██╔████╔██║██║██╔██╗ ██║███████║██║     ",
-        r"██╔══██╗██║   ██║██║   ██║██║╚██╔╝██║██║██║╚██╗██║██╔══██║██║     ",
-        r"██████╔╝╚██████╔╝╚██████╔╝██║ ╚═╝ ██║██║██║ ╚████║██║  ██║███████╗", 
-        r"╚═════╝  ╚═════╝  ╚═════╝ ╚═╝     ╚═╝╚═╝╚═╝  ╚═══╝╚═╝  ╚═╝╚══════╝",
-        r"                        R O G M I N A L                              "
+        r"  $$$$$$$\   $$$$$$\   $$$$$$\  $$\      $$\ $$$$$$\ $$\   $$\  $$$$$$\  $$\       ",
+        r"  $$  __$$\ $$  __$$\ $$  __$$\ $$$\    $$$ |\_$$  _|$$$\  $$ |$$  __$$\ $$ |      ",
+        r"  $$ |  $$ |$$ /  $$ |$$ /  \__|$$$$\  $$$$ |  $$ |  $$$$\ $$ |$$ /  $$ |$$ |      ",
+        r"  $$$$$$$  |$$ |  $$ |$$ |$$$$\ $$\$$\$$ $$ |  $$ |  $$ $$\$$ |$$$$$$$$ |$$ |      ",
+        r"  $$  __$$< $$ |  $$ |$$ |\_$$ |$$ \$$$  $$ |  $$ |  $$ \$$$$ |$$  __$$ |$$ |      ", 
+        r"  $$ |  $$ |$$ |  $$ |$$ |  $$ |$$ |\$  /$$ |  $$ |  $$ |\$$$ |$$ |  $$ |$$ |      ",
+        r"  $$ |  $$ | $$$$$$  |\$$$$$$  |$$ | \_/ $$ |$$$$$$\ $$ | \$$ |$$ |  $$ |$$$$$$$$\ ",
+        r"  \__|  \__| \______/  \______/ \__|     \__|\______|\__|  \__|\__|  \__|\________|",
+        r"                               R O G M I N A L                                     ",
+        r"                                                                                   ",
     ]
     lines = []
     lines.extend(art)
     lines.append("")
     lines.append("But : descendre les étages, survivre et devenir surpuissant grâce au loot.")
-    lines.append("Fonctionnalités : quêtes PNJ, marchand bi‑panneau, objets rares/étranges, difficulté progressive.")
-    lines.append("Commandes : ZQSD/WASD se déplacer • E parler • B boutique • I inventaire • J journal • X quitter • Ω élites")
+    lines.append("Fonctionnalités : quêtes PNJ, marchand, objets rares/étranges, difficulté progressive.")
+    lines.append("Commandes : ZQSD/WASD se déplacer • E parler • B boutique • I inventaire • J journal • X quitter")
     lines.append("Astuce : entre un nombre + direction (ex: 5d) ou '.' pour répéter le dernier pas.")
     clear_screen(); draw_box('ROGMINAL — Menu', lines, width=100); pause("Appuyez sur Entrée pour jouer...")
 
