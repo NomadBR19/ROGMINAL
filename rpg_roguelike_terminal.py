@@ -473,7 +473,7 @@ CONSUMABLE_POOL = [
     Consumable('Pierre de rappel','flee','', 'Rare', 'Permet de fuir un combat.'),
 ]
 
-RARITY_WEIGHTS_BASE = {'Commun':72,'Rare':18,'Épique':7,'Légendaire':1,'Étrange':1}
+RARITY_WEIGHTS_BASE = {'Commun':72,'Rare':10,'Épique':4,'Légendaire':0.5,'Étrange':8}
 RARITY_ORDER = ['Commun','Rare','Épique','Légendaire','Étrange']
 
 # ========================== PERSONNAGES & MONSTRES ==========================
@@ -747,9 +747,8 @@ def open_inventory(player):
                     elif cns.effect == 'buff_atk':
                         player.temp_buffs['atk'] += cns.power; player.temp_buffs['turns'] = 3
                     elif cns.effect == 'flee':
-                        print("Vous utilisez un fumigène pour fuir le combat.")
-                        return 'fled'
-                    player.consumables.pop(idx)
+                        print("Vous utilisez une pierre de rappel pour fuir le combat.")
+                    return 'fled'
                 else:  # 'dc'
                     player.consumables.pop(idx)
             continue
@@ -792,6 +791,11 @@ def fight(player, depth):
         defend=False
         if cmd=='1':
             dmg = compute_damage(player, monster, p_specs) + player.temp_buffs['atk']
+            # Berserk : si PV <= 50%, bonus multiplicatif
+            if player.hp <= player.max_hp // 2:
+                bz = p_specs.get('berserk', 0.0)  # ex: 0.5 = +50%
+                if bz:
+                    dmg = int(dmg * (1.0 + bz))
             monster.take_damage(dmg); print(c(f"Vous infligez {dmg} dégâts.", Ansi.BRIGHT_GREEN))
             if p_specs.get('lifesteal'): player.heal(int(dmg* p_specs['lifesteal']))
             if p_specs.get('poison_on_hit'): poison_turns = max(poison_turns, 2)
@@ -849,9 +853,16 @@ def fight(player, depth):
             player.take_damage(mdmg); print(c(f"{mdef['name']} inflige {mdmg} dégâts.", Ansi.BRIGHT_RED))
             if p_specs.get('thorns',0)>0 and mdmg>0:
                 thorn = p_specs['thorns']; monster.take_damage(thorn); print(f"Épines renvoient {thorn} dégâts.")
+        # Effets temporaires        
         if player.temp_buffs['turns']>0:
             player.temp_buffs['turns']-=1
             if player.temp_buffs['turns']==0: player.temp_buffs['atk']=0
+        # Régénération    
+        rg = p_specs.get('regen', 0)
+        if rg:
+            player.heal(rg)
+            print(f"Régénération +{rg} PV.")
+
         time.sleep(0.6)
 
         if monster.hp <= 0:
@@ -860,6 +871,9 @@ def fight(player, depth):
             gold_gain = int((mdef['gold'] + random.randint(0, max(1, monster.max_hp//6))) * BALANCE['combat_gold_mult'])
             player.gain_xp(xp_gain)
             player.gold += gold_gain
+            # greed bonus
+            greed = p_specs.get('greed', 0.0)  # ex: 0.30 = +30%
+            gold_gain = int(gold_gain * (1.0 + greed))
             print(f"+{xp_gain} XP, +{gold_gain} or")
 
             # Drop d'objet (indépendant)
@@ -1055,8 +1069,9 @@ visible_cells = _visible_cells
 
 def render_map(floor, player_pos, player, fatigue):
     # maj visibilité
-    extra_fov = player.all_specials().get("fov_bonus", 0)
-    floor.visible = _visible_cells(floor, player_pos, radius=8 + int(extra_fov))
+    base_radius = 8
+    bonus = player.all_specials().get('fov_bonus', 0)
+    floor.visible = _visible_cells(floor, player_pos, radius=base_radius + bonus)
     floor.discovered |= floor.visible
     # mémoriser les POIs vus pour rester visibles ensuite
     if floor.up and floor.up in floor.visible: floor.seen_stairs.add(floor.up)
@@ -1264,15 +1279,15 @@ def maybe_trigger_event(player, depth):
     base = 0.05 + depth*0.005
     if roll < base:
         e = random.random()
-        if e < 0.30:
+        if e < 0.10:
             dmg = max(1, 2 + depth)
             player.take_damage(dmg)
             draw_box('Événement', [f"Un piège ! Vous perdez {dmg} PV."], width=50); pause()
-        elif e < 0.55:
+        elif e < 0.30:
             heal = max(3, 5 + depth)
             player.heal(heal)
             draw_box('Événement', [f"Une source claire... Vous récupérez {heal} PV."], width=56); pause()
-        elif e < 0.80:
+        elif e < 0.50:
             g = random.randint(3, 8+depth)
             player.gold += g
             draw_box('Événement', [f"Vous trouvez une bourse: +{g} or."], width=50); pause()
