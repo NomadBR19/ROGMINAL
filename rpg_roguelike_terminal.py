@@ -11,7 +11,7 @@ Lancez : python rpg_roguelike_terminal.py
 Options : --test (lance des tests rapides)
 """
 
-import os, sys, time, random, re, ctypes
+import os, sys, time, random, re, ctypes, math
 from collections import namedtuple, deque
 
 if os.name == 'nt':
@@ -85,6 +85,7 @@ class Ansi:
     BRIGHT_BLUE = "\x1b[94m"; BRIGHT_MAGENTA = "\x1b[95m"; BRIGHT_CYAN = "\x1b[96m"; BRIGHT_WHITE = "\x1b[97m"
 
 SUPPORTS_ANSI = True
+SHOW_SIDE_SPRITE = True
 
 def enable_windows_ansi():
     """Active l'affichage ANSI sous Windows 10+"""
@@ -155,6 +156,40 @@ def draw_box(title: str, lines, width: int | None = None):
             print(c('│', Ansi.BRIGHT_WHITE) + part + ' '*pad + c('│', Ansi.BRIGHT_WHITE))
     print(c(bot, Ansi.BRIGHT_WHITE))
 
+# ========================== RENDU DU PERSONNAGE ==========================
+
+def _tint_line_red(line: str, strong=False):
+    # teinte toute la ligne ; strong = plus vif
+    color = Ansi.BRIGHT_RED if strong else Ansi.RED
+    return c(line, color)
+
+def colorize_sprite_by_hp(sprite_lines, hp, max_hp):
+    """
+    Colore le sprite du BAS vers le HAUT en rouge selon la proportion de PV perdus.
+    Plus on a peu de PV, plus de lignes en bas deviennent rouges (et les plus basses en BRIGHT_RED).
+    """
+    if max_hp <= 0:
+        frac_lost = 1.0
+    else:
+        frac_lost = max(0.0, min(1.0, 1.0 - (hp / max_hp)))
+
+    h = len(sprite_lines)
+    # nb de lignes à teinter depuis le BAS (>= 0)
+    red_rows = int(math.ceil(frac_lost * h))
+
+    out = []
+    for i, raw in enumerate(sprite_lines):
+        # i = 0 en haut, h-1 en bas -> on teinte si i >= h - red_rows
+        if i >= h - red_rows and red_rows > 0:
+            # intensité : les 1/3 lignes les plus basses = bright
+            # calcule la "profondeur" dans la zone rouge (0 en haut de la zone rouge, 1 tout en bas)
+            depth = (i - (h - red_rows)) / max(1, red_rows - 1)
+            strong = depth > 0.66
+            out.append(_tint_line_red(raw, strong=strong))
+        else:
+            out.append(raw)  # pas de teinte
+    return out
+
 # ========================== PARAMÈTRES ==========================
 MAP_W, MAP_H = 48, 20
 FLOOR, WALL = '·', '#'
@@ -204,6 +239,9 @@ BALANCE = {
     # Garde-fous de jouabilité (post-ajustement)
     'mon_max_atk_vs_player_hp': 0.45,  # ATK monstre ≤ 45% des PV max du joueur
     'mon_max_def_vs_player_atk': 0.85, # DEF monstre ≤ 85% de l’ATK du joueur (sinon combats trop longs)
+
+    # Soin de 50% des PV max à chaque montée de niveau
+    'level_heal_ratio': 0.50,
 }
 
 # Déplacements: ZQSD/WASD seulement
@@ -308,18 +346,63 @@ COMMON_ITEMS = [
     Item('Épée rouillée','weapon',0,2,0,0.00,'Commun','Vieille lame.',None),
     Item('Bouclier bois','armor',4,0,2,0.0,'Commun','Bouclier simple.',None),
     Item('Anneau terne','accessory',3,1,0,0.00,'Commun','Petit boost.',None),
+    Item('Couteau émoussé','weapon',0,1,0,0.00,'Commun','Mieux que rien.',None),
+    Item('Massette légère','weapon',0,2,0,0.00,'Commun','Cogne un peu.',None),
+    Item('Bâton fendu','weapon',0,2,0,0.01,'Commun','Une once de magie.',None),
+    Item('Plastron de tissu','armor',3,0,1,0.00,'Commun','Protection minimale.',None),
+    Item('Armature de cuir','armor',5,0,1,0.00,'Commun','Souple et discret.',None),
+    Item('Gants rêches','accessory',2,1,0,0.00,'Commun','Mieux saisir l’arme.',None),
+    Item('Bottes usées','accessory',3,0,0,0.00,'Commun','Un peu de confort.',None),
+    Item('Broche terne','accessory',2,0,0,0.01,'Commun','Légère chance.',None),
+    Item('Bouclier cabossé','armor',6,0,2,0.00,'Commun','A déjà servi.',None),
+    Item('Pavois court','armor',4,0,2,0.00,'Commun','Facile à manier.',None),
+    Item('Lame courte','weapon',0,2,0,0.02,'Commun','Rapide.',None),
+    Item('Épieu paysan','weapon',0,3,0,0.00,'Commun','Long et rustique.',None),
+    Item('Chapeau feutre','accessory',1,0,0,0.01,'Commun','Un peu de panache.',None),
+    Item('Bracelet de corde','accessory',2,0,0,0.00,'Commun','Sans propriétés.',None),
+    Item('Ceinture épaisse','accessory',4,0,0,0.00,'Commun','Maintient le torse.',None),
 ]
 RARE_ITEMS = [
     Item('Épée équilibrée','weapon',0,5,0,0.02,'Rare','Bon compromis.',None),
     Item('Cuirasse cloutée','armor',8,0,3,0.0,'Rare','Solide.',None),
     Item('Anneau de force','accessory',0,3,0,0.00,'Rare','+ATK.',None),
-    Item("Cape d'ombre",'armor',0,0,1,0.10,'Rare','+Critique.',None),
+    Item("Cape d'ombre",'armor',0,0,1,0.20,'Rare','+Critique.',None),
+    Item('Hache équilibrée','weapon',0,6,0,0.00,'Rare','Bonne prise en main.',None),
+    Item('Rapière fine','weapon',0,5,0,0.03,'Rare','Perce les failles.',None),
+    Item('Massue cloutée','weapon',0,6,0,0.00,'Rare','Écrase bien.',None),
+    Item('Cotte rivetée','armor',9,0,3,0.00,'Rare','Robuste.',None),
+    Item('Bouclier rond','armor',10,0,3,0.00,'Rare','Compact.',None),
+    Item('Brassards d’acier','armor',6,0,2,0.00,'Rare','Protègent les avants-bras.',None),
+    Item('Amulette d’adresse','accessory',0,2,0,0.04,'Rare','Aiguise la précision.',None),
+    Item('Anneau d’onguent','accessory',6,0,0,0.00,'Rare','Des soins plus sûrs.',None),
+    Item('Bottes renforcées','accessory',5,0,1,0.00,'Rare','Bien assises.',None),
+    Item('Targe nervurée','armor',8,0,4,0.00,'Rare','Dévie les coups.',None),
+    Item('Épée large','weapon',0,6,0,0.01,'Rare','Tranche en arc.',None),
+    Item('Bâton runique','weapon',0,5,0,0.04,'Rare','Canalise la magie.',None),
+    Item('Cape à capuche','armor',4,0,2,0.03,'Rare','Se fond dans l’ombre.',None),
+    Item('Ceinturon solide','accessory',8,0,0,0.00,'Rare','Bon maintien.',None),
+    Item('Médaillon poli','accessory',4,1,0,0.02,'Rare','Brille légèrement.',None),
 ]
 EPIC_ITEMS = [
     Item('Épée du vent','weapon',0,7,0,0.06,'Épique','Légère, précise.',{'dodge':0.05}),
     Item('Armure runique','armor',16,0,6,0.02,'Épique','Absorbe un peu.',{'regen':5}),
     Item('Griffe du destin','accessory',0,0,0,0.10,'Épique','Chance critique élevée.',None),
-    Item('Lame vampirique','weapon',0,6,0,0.00,'Épique','Draine la vie.',{'lifesteal':0.25}),
+    Item('Lame vampirique','weapon',0,6,0,0.00,'Épique','Draine la vie.',{'lifesteal':0.20}),
+    Item('Épée tempête','weapon',0,8,0,0.06,'Épique','Déchaîne les cieux.',{'dodge':0.03}),
+    Item('Lame des sables','weapon',0,7,0,0.08,'Épique','Coupe en tourbillon.',None),
+    Item('Marteau tellurique','weapon',0,9,0,0.00,'Épique','Vibre à l’impact.',None),
+    Item('Armure écailleuse','armor',14,0,7,0.01,'Épique','Écailles imbriquées.',None),
+    Item('Haubert béni','armor',18,0,5,0.02,'Épique','Chants gravés.',{'regen':3}),
+    Item('Bouclier solaire','armor',10,0,8,0.00,'Épique','Renvoie l’éclat.',{'thorns':2}),
+    Item('Anneau d’éclair','accessory',0,4,0,0.06,'Épique','Nerfs en éveil.',None),
+    Item('Amulette de vigueur','accessory',14,0,0,0.02,'Épique','Force vitale accrue.',None),
+    Item('Gants de prédateur','accessory',0,5,0,0.00,'Épique','Prise mortelle.',None),
+    Item('Épée polaire','weapon',0,7,0,0.05,'Épique','Froid mordant.',None),
+    Item('Cuissots de granite','armor',12,0,6,0.00,'Épique','Base inébranlable.',None),
+    Item('Cape de traque','armor',8,0,4,0.05,'Épique','Trajets silencieux.',{'dodge':0.04}),
+    Item('Griffe d’obsidienne','accessory',0,0,0,0.12,'Épique','Tranchant absolu.',None),
+    Item('Pendentif vital','accessory',18,0,0,0.00,'Épique','Courage du cœur.',{'regen':2}),
+    Item('Bottes du vent','accessory',6,0,3,0.00,'Épique','Foulée vive.',{'dodge':0.03}),
 ]
 LEGENDARY_ITEMS = [
     Item('Couronne ancienne','accessory',20,2,2,0.05,'Légendaire','Attire les ennuis.',{'unlucky':0.10}),
@@ -327,18 +410,43 @@ LEGENDARY_ITEMS = [
     Item('Épée de chaos','weapon',0,10,0,0.0,'Légendaire','Imprévisible.',{'chaos':True}),
     Item('Bouclier à pointes','armor',8,0,6,0.0,'Légendaire','Ça pique.',{'thorns':3}),
     Item('Bottes de plomb','accessory',12,0,4,-0.06,'Légendaire','Très lourdes.',{'heavy':True}),
+    Item('Épée maîtresse','weapon',0,11,0,0.05,'Légendaire','Domine le duel.',None),
+    Item('Tranche-soleil','weapon',0,12,0,0.02,'Légendaire','Arc aveuglant.',None),
+    Item('Marteau des rois','weapon',0,13,0,0.00,'Légendaire','Poids de l’histoire.',None),
+    Item('Heaume de l’aube','armor',16,0,8,0.02,'Légendaire','Protège l’esprit.',None),
+    Item('Cuirasse sanctifiée','armor',20,0,9,0.01,'Légendaire','Bénédiction antique.',{'regen':4}),
+    Item('Égide écarlate','armor',14,0,10,0.00,'Légendaire','Mur vivant.',{'thorns':4}),
+    Item('Anneau du phénix','accessory',10,3,2,0.06,'Légendaire','Cendre et renouveau.',None),
+    Item('Sceau royal','accessory',15,2,3,0.05,'Légendaire','Autorité gravée.',None),
+    Item('Bottes astrales','accessory',10,0,5,0.02,'Légendaire','Pas irréels.',{'dodge':0.05}),
+    Item('Lame hurlante','weapon',0,10,0,0.08,'Légendaire','Cri dans l’acier.',None),
+    Item('Plastron du colosse','armor',24,0,10,0.00,'Légendaire','Titan d’acier.',None),
+    Item('Bouclier des épines','armor',12,0,9,0.00,'Légendaire','Impossible à enlacer.',{'thorns':5}),
+    Item('Amulette du destin','accessory',8,0,0,0.12,'Légendaire','Faveur capricieuse.',None),
+    Item('Couronne du zénith','accessory',22,3,3,0.05,'Légendaire','Apogée du pouvoir.',None),
+    Item('Épée des millénaires','weapon',0,14,0,0.04,'Légendaire','A vu des empires naître.',None),
 ]
 CURSED_ODDITIES = [
     Item('Anneau maudit','accessory',-12,5,0,0.00,'Étrange','Puissant mais dangereux.',{'cursed':True}),
     Item('Amulette du sang','accessory',-5,0,0,0.08,'Étrange','Le sang appelle le sang.',{'vampirism':8}),
     Item('Talisman toxique','accessory',0,0,0,0.00,'Étrange','Chaque coup empoisonne.',{'poison_on_hit':2}),
     Item('Écaille noire','armor',6,0,2,0.0,'Étrange','Difficile à retirer.',{'cursed':True,'dodge':0.03}),
-    Item("Lame de verre", "weapon", 0, 8, 0, 0.08, "Étrange","Dégâts monstrueux, mais tu encaisses pire.",{"glass": True, "vuln_mult": 1.2}),"Plus tes PV sont bas, plus tu frappes fort.",{"berserk": 0.5},  # <=50% PV : +50% dégâts de base
-    Item("Bourse maudite", "accessory", 6, 0, -2, -0.02, "Étrange","L or coule... mais la chance te fuit.",{"greed": 0.30, "unlucky": 0.08}),  # +30% or, baisse des raretés
-    Item("Cape de brume", "armor", -6, 0, 2, 0.00, "Étrange","Tu vois plus loin à travers la brume.",{"fov_bonus": 2, "unlucky": 0.05}),
-    Item("Épine noire", "accessory", -4, 0, 0, 0.00, "Étrange","Blesse ceux qui te frappent. Prix du sang.",{"thorns": 5, "bleed_self": 2}),
-    Item("Sceau du pacte", "accessory", 0, 2, 0, 0.00, "Étrange","Ta compétence dévore tes PV, mais ravage l ennemi.",{"special_cost_mult": 1.8, "special_dmg_mult": 1.4}),
-    Item("Plastron plombé", "armor", 12, 0, 7, -0.04, "Étrange","Très solide, mais chaque impact résonne.",{"frail": 2}),  # +2 dégâts plats subis
+    Item('Bourse maudite','accessory',6,0,-2,-0.02,'Étrange',"L’or coule... mais la chance te fuit.",{'greed':0.30,'unlucky':0.08}),
+    Item('Cape de brume','armor',-6,0,2,0.00,'Étrange','Tu vois plus loin à travers la brume.',{'fov_bonus':2,'unlucky':0.05}),
+    Item('Épine noire','accessory',-4,0,0,0.00,'Étrange','Blesse ceux qui te frappent. Prix du sang.',{'thorns':5,'bleed_self':2}),
+    Item('Sceau du pacte','accessory',0,2,0,0.00,'Étrange','Ta compétence dévore tes PV, mais ravage l’ennemi.',{'special_cost_mult':1.8,'special_dmg_mult':1.4}),
+    Item('Masque triste','accessory',-6,3,0,0.00,'Étrange','Force mélancolique.',{'unlucky':0.05}),
+    Item('Bottes ferrées','accessory',8,0,3,-0.05,'Étrange','Chaque pas résonne.',{'heavy':True}),
+    Item('Lame sanglante','weapon',-4,9,0,0.00,'Étrange','Réclame un tribut.',{'bleed_self':3}),
+    Item('Cape souillée','armor',-8,0,3,0.00,'Étrange','Repousse les rares fortunes.',{'unlucky':0.1}),
+    Item('Anneau du paria','accessory',-5,2,0,0.06,'Étrange','Acéré mais maudit.',{'unlucky':0.08}),
+    Item('Sablier fêlé','accessory',-6,0,0,0.00,'Étrange','Temps contre toi.',{'special_cost_mult':1.4,'special_dmg_mult':1.2}),
+    Item('Parchemin de rage','accessory',-8,4,0,0.00,'Étrange','Furie contrôlée.',{'berserk':0.5}),
+    Item('Lanterne brumeuse','accessory',-4,0,0,0.00,'Étrange','Vois mais perds la chance.',{'fov_bonus':2,'unlucky':0.06}),
+    Item('Gantelet d’épines','armor',-2,0,4,0.00,'Étrange','Blesse qui frappe.',{'thorns':4}),
+    Item('Pacte gris','accessory',0,3,0,0.00,'Étrange','Puissance à crédit.',{'special_cost_mult':1.6,'special_dmg_mult':1.3}),
+    Item('Talisman de peste','accessory',-6,0,0,0.00,'Étrange','Tout coup infecte.',{'poison_on_hit':3}),
+    Item('Amulette de l’avare','accessory',-2,0,0,-0.04,'Étrange','L’or ou la chance ?',{ 'greed':0.4,'unlucky':0.12 }),
 ]
 ALL_ITEMS = COMMON_ITEMS + RARE_ITEMS + EPIC_ITEMS + LEGENDARY_ITEMS + CURSED_ODDITIES
 
@@ -360,12 +468,12 @@ ALL_ITEMS = _validate_item_pool()
 
 CONSUMABLE_POOL = [
     Consumable('Potion de soin','heal',24,'Commun','Rend 24 PV.'),
-    Consumable('Élixir majeur','heal',50,'Rare','Rend beaucoup de PV.'),
+    Consumable('Élixir majeur','heal',65,'Rare','Rend beaucoup de PV.'),
     Consumable('Potion de rage','buff_atk',4,'Rare','ATK +4 (3 tours).'),
-    Consumable('Flasque étrange','heal',-12,'Étrange','Risque de vous blesser !'),
+    Consumable('Pierre de rappel','flee','', 'Rare', 'Permet de fuir un combat.'),
 ]
 
-RARITY_WEIGHTS_BASE = {'Commun':72,'Rare':18,'Épique':7,'Légendaire':1,'Étrange':1}
+RARITY_WEIGHTS_BASE = {'Commun':72,'Rare':10,'Épique':4,'Légendaire':0.5,'Étrange':8}
 RARITY_ORDER = ['Commun','Rare','Épique','Légendaire','Étrange']
 
 # ========================== PERSONNAGES & MONSTRES ==========================
@@ -425,8 +533,12 @@ class Player(Character):
             self.max_hp += BALANCE['level_hp_gain']
             self.atk    += BALANCE['level_atk_gain']
             self.defense+= BALANCE['level_def_gain']
-            self.hp = self.max_hp
-            print(c(f"*** Niveau {self.level}! Stats +HP:{BALANCE['level_hp_gain']} +ATK:{BALANCE['level_atk_gain']} +DEF:{BALANCE['level_def_gain']} ***", Ansi.BRIGHT_YELLOW))
+
+            # Soin partiel à chaque montée de niveau
+            heal = int(self.max_hp * BALANCE.get('level_heal_ratio', 0.50))
+            self.hp = min(self.max_hp, self.hp + heal)
+
+            print(c(f"*** Niveau {self.level}! +HP:{BALANCE['level_hp_gain']} "f"+ATK:{BALANCE['level_atk_gain']} +DEF:{BALANCE['level_def_gain']}"f"(+{heal} PV) ***", Ansi.BRIGHT_YELLOW))
             time.sleep(0.6)
 
 MONSTER_DEFS = [
@@ -548,9 +660,9 @@ def random_consumable(): return random.choice(CONSUMABLE_POOL)
 
 def price_of(it):
     if isinstance(it, Consumable):
-        return {'Commun':12,'Rare':28,'Épique':55,'Légendaire':120,'Étrange':70}.get(it.rarity,20)
+        return {'Commun':12,'Rare':55,'Épique':90,'Légendaire':180,'Étrange':70}.get(it.rarity,20)
     score = it.hp_bonus*1.2 + it.atk_bonus*4 + it.def_bonus*3 + it.crit_bonus*60
-    rar = {'Commun':1.0,'Rare':1.5,'Épique':2.3,'Légendaire':3.5,'Étrange':2.7}.get(it.rarity,1.0)
+    rar = {'Commun':1.0,'Rare':2.7,'Épique':3.5,'Légendaire':4.5,'Étrange':2.7}.get(it.rarity,1.0)
     spec = 1.0 + (0.3*(len(it.special) if it.special else 0))
     return int(max(8, score*rar*spec))
 
@@ -634,7 +746,9 @@ def open_inventory(player):
                         player.heal(cns.power)
                     elif cns.effect == 'buff_atk':
                         player.temp_buffs['atk'] += cns.power; player.temp_buffs['turns'] = 3
-                    player.consumables.pop(idx)
+                    elif cns.effect == 'flee':
+                        print("Vous utilisez une pierre de rappel pour fuir le combat.")
+                    return 'fled'
                 else:  # 'dc'
                     player.consumables.pop(idx)
             continue
@@ -677,6 +791,11 @@ def fight(player, depth):
         defend=False
         if cmd=='1':
             dmg = compute_damage(player, monster, p_specs) + player.temp_buffs['atk']
+            # Berserk : si PV <= 50%, bonus multiplicatif
+            if player.hp <= player.max_hp // 2:
+                bz = p_specs.get('berserk', 0.0)  # ex: 0.5 = +50%
+                if bz:
+                    dmg = int(dmg * (1.0 + bz))
             monster.take_damage(dmg); print(c(f"Vous infligez {dmg} dégâts.", Ansi.BRIGHT_GREEN))
             if p_specs.get('lifesteal'): player.heal(int(dmg* p_specs['lifesteal']))
             if p_specs.get('poison_on_hit'): poison_turns = max(poison_turns, 2)
@@ -734,9 +853,16 @@ def fight(player, depth):
             player.take_damage(mdmg); print(c(f"{mdef['name']} inflige {mdmg} dégâts.", Ansi.BRIGHT_RED))
             if p_specs.get('thorns',0)>0 and mdmg>0:
                 thorn = p_specs['thorns']; monster.take_damage(thorn); print(f"Épines renvoient {thorn} dégâts.")
+        # Effets temporaires        
         if player.temp_buffs['turns']>0:
             player.temp_buffs['turns']-=1
             if player.temp_buffs['turns']==0: player.temp_buffs['atk']=0
+        # Régénération    
+        rg = p_specs.get('regen', 0)
+        if rg:
+            player.heal(rg)
+            print(f"Régénération +{rg} PV.")
+
         time.sleep(0.6)
 
         if monster.hp <= 0:
@@ -745,6 +871,9 @@ def fight(player, depth):
             gold_gain = int((mdef['gold'] + random.randint(0, max(1, monster.max_hp//6))) * BALANCE['combat_gold_mult'])
             player.gain_xp(xp_gain)
             player.gold += gold_gain
+            # greed bonus
+            greed = p_specs.get('greed', 0.0)  # ex: 0.30 = +30%
+            gold_gain = int(gold_gain * (1.0 + greed))
             print(f"+{xp_gain} XP, +{gold_gain} or")
 
             # Drop d'objet (indépendant)
@@ -917,6 +1046,15 @@ class Floor:
 
 # ========================== RENDU & FOG ==========================
 
+def box_sprite(sprite_lines):
+    if not sprite_lines:
+        return []
+    w = len(sprite_lines[0])
+    top = c('┌' + '─'*w + '┐', Ansi.BRIGHT_WHITE)
+    bot = c('└' + '─'*w + '┘', Ansi.BRIGHT_WHITE)
+    body = [c('│', Ansi.BRIGHT_WHITE) + line + c('│', Ansi.BRIGHT_WHITE) for line in sprite_lines]
+    return [top] + body + [bot]
+
 def _visible_cells(floor: Floor, player_pos, radius=8):
     px,py = player_pos
     vis=set()
@@ -931,8 +1069,9 @@ visible_cells = _visible_cells
 
 def render_map(floor, player_pos, player, fatigue):
     # maj visibilité
-    extra_fov = player.all_specials().get("fov_bonus", 0)
-    floor.visible = _visible_cells(floor, player_pos, radius=8 + int(extra_fov))
+    base_radius = 8
+    bonus = player.all_specials().get('fov_bonus', 0)
+    floor.visible = _visible_cells(floor, player_pos, radius=base_radius + bonus)
     floor.discovered |= floor.visible
     # mémoriser les POIs vus pour rester visibles ensuite
     if floor.up and floor.up in floor.visible: floor.seen_stairs.add(floor.up)
@@ -949,6 +1088,12 @@ def render_map(floor, player_pos, player, fatigue):
     pad = max(0, MAP_W - len(title))
     print(c('│', Ansi.BRIGHT_WHITE) + c(title + ' '*pad, Ansi.BRIGHT_YELLOW) + c('│', Ansi.BRIGHT_WHITE))
     print(c('├' + '─'*MAP_W + '┤', Ansi.BRIGHT_WHITE))
+
+    spr = player.sprite if getattr(player, 'sprite', None) else SPRITES.get('knight', [])
+    spr_colored = colorize_sprite_by_hp(spr, player.hp, player.max_hp)
+    spr_boxed   = box_sprite(spr_colored)
+    spr_h = len(spr_boxed)
+
     for y in range(MAP_H):
         row=''
         for x in range(MAP_W):
@@ -979,7 +1124,20 @@ def render_map(floor, player_pos, player, fatigue):
             else:
                 # zone connue mais non visible : terrain seulement, en atténué
                 row += (c('·', Ansi.DIM) if ch==FLOOR else c('#', Ansi.BRIGHT_BLACK))
-        print(c('│', Ansi.BRIGHT_WHITE) + row + c('│', Ansi.BRIGHT_WHITE))
+            side = ''
+        # Affichage du sprite du joueur à côté de la carte    
+        if SHOW_SIDE_SPRITE:
+            spr = player.sprite if getattr(player, 'sprite', None) else SPRITES.get('knight', [])
+            spr_colored = colorize_sprite_by_hp(spr, player.hp, player.max_hp)
+            spr_h = len(spr_colored)
+            spr_w = len(spr_colored[0]) if spr_colored else 0
+            # centrage vertical du sprite par rapport à la carte
+            top_off = max(0, (MAP_H - spr_h) // 2)
+            if top_off <= y < top_off + spr_h:
+                side = '  ' + spr_colored[y - top_off]  # 2 espaces puis la ligne du sprite
+            else:
+                side = '  ' + ' ' * spr_w
+        print(c('│', Ansi.BRIGHT_WHITE) + row + c('│', Ansi.BRIGHT_WHITE)+ (side if SHOW_SIDE_SPRITE else ''))
     print(c('└' + '─' * MAP_W + '┘', Ansi.BRIGHT_WHITE))
     print(c('[ZQSD/WASD] déplacer • E parler/valider • B boutique (sur $) • J journal • I inventaire • X quitter', Ansi.BRIGHT_BLACK))
     print(player.stats_summary())
@@ -1121,15 +1279,15 @@ def maybe_trigger_event(player, depth):
     base = 0.05 + depth*0.005
     if roll < base:
         e = random.random()
-        if e < 0.30:
+        if e < 0.10:
             dmg = max(1, 2 + depth)
             player.take_damage(dmg)
             draw_box('Événement', [f"Un piège ! Vous perdez {dmg} PV."], width=50); pause()
-        elif e < 0.55:
+        elif e < 0.30:
             heal = max(3, 5 + depth)
             player.heal(heal)
             draw_box('Événement', [f"Une source claire... Vous récupérez {heal} PV."], width=56); pause()
-        elif e < 0.80:
+        elif e < 0.50:
             g = random.randint(3, 8+depth)
             player.gold += g
             draw_box('Événement', [f"Vous trouvez une bourse: +{g} or."], width=50); pause()
