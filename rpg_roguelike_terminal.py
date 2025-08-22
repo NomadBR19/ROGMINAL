@@ -87,6 +87,75 @@ class Ansi:
 SUPPORTS_ANSI = True
 SHOW_SIDE_SPRITE = True
 
+# Truecolor (RGB) — pour de vrais pastels si le terminal le supporte
+USE_TRUECOLOR = True  # passe à False si rendu bizarre
+
+def rgb(r,g,b): return f"\x1b[38;2;{r};{g};{b}m"
+PASTEL = lambda r,g,b: rgb(r,g,b) if (SUPPORTS_ANSI and USE_TRUECOLOR) else Ansi.WHITE
+
+THEMES = [
+    # Classique
+    {
+        'name':'stone',
+        'border': Ansi.BRIGHT_WHITE,
+        'title':  Ansi.BRIGHT_YELLOW,
+        'floor':  Ansi.DIM,             # points de sol
+        'wall':   Ansi.BRIGHT_BLACK,
+        'npc':    Ansi.BRIGHT_CYAN,
+        'shop':   Ansi.BRIGHT_YELLOW,
+        'up':     Ansi.BRIGHT_CYAN,
+        'down':   Ansi.BRIGHT_MAGENTA,
+        'elite':  Ansi.BRIGHT_RED,
+        'item':   Ansi.BRIGHT_YELLOW,
+        'player': Ansi.BRIGHT_GREEN,
+    },
+    # Pastel “mousse”
+    {
+        'name':'moss',
+        'border': PASTEL(220,230,220),
+        'title':  PASTEL(170,200,170),
+        'floor':  PASTEL(150,170,150),
+        'wall':   PASTEL(90,110,90),
+        'npc':    PASTEL(120,190,210),
+        'shop':   PASTEL(230,210,140),
+        'up':     PASTEL(150,210,230),
+        'down':   PASTEL(210,150,230),
+        'elite':  PASTEL(230,120,120),
+        'item':   PASTEL(230,210,140),
+        'player': PASTEL(160,230,160),
+    },
+    # Pastel “ardoise”
+    {
+        'name':'slate',
+        'border': PASTEL(220,220,235),
+        'title':  PASTEL(180,180,220),
+        'floor':  PASTEL(160,165,185),
+        'wall':   PASTEL(100,105,125),
+        'npc':    PASTEL(160,200,230),
+        'shop':   PASTEL(230,200,150),
+        'up':     PASTEL(150,200,230),
+        'down':   PASTEL(210,160,230),
+        'elite':  PASTEL(230,140,140),
+        'item':   PASTEL(230,200,150),
+        'player': PASTEL(170,220,190),
+    },
+    # Pastel “sable”
+    {
+        'name':'sand',
+        'border': PASTEL(235,230,220),
+        'title':  PASTEL(210,190,140),
+        'floor':  PASTEL(210,200,185),
+        'wall':   PASTEL(160,150,130),
+        'npc':    PASTEL(160,200,210),
+        'shop':   PASTEL(230,190,120),
+        'up':     PASTEL(150,190,220),
+        'down':   PASTEL(210,150,220),
+        'elite':  PASTEL(220,110,110),
+        'item':   PASTEL(230,190,120),
+        'player': PASTEL(180,210,170),
+    },
+]
+
 def enable_windows_ansi():
     """Active l'affichage ANSI sous Windows 10+"""
     global SUPPORTS_ANSI
@@ -470,11 +539,47 @@ CONSUMABLE_POOL = [
     Consumable('Potion de soin','heal',24,'Commun','Rend 24 PV.'),
     Consumable('Élixir majeur','heal',65,'Rare','Rend beaucoup de PV.'),
     Consumable('Potion de rage','buff_atk',4,'Rare','ATK +4 (3 tours).'),
-    Consumable('Pierre de rappel','flee','', 'Rare', 'Permet de fuir un combat.'),
+    Consumable('Pierre de rappel','flee','0', 'Rare', 'Permet de fuir un combat.'),
 ]
 
 RARITY_WEIGHTS_BASE = {'Commun':72,'Rare':10,'Épique':4,'Légendaire':0.5,'Étrange':8}
 RARITY_ORDER = ['Commun','Rare','Épique','Légendaire','Étrange']
+
+# === Couleurs pour les stats ===
+STAT_COLORS = {
+    'HP':   Ansi.BRIGHT_GREEN,
+    'ATK':  Ansi.BRIGHT_RED,
+    'DEF':  Ansi.BRIGHT_CYAN,
+    'CRIT': Ansi.BRIGHT_MAGENTA,
+    'XP':   Ansi.BRIGHT_YELLOW,
+    'OR':   Ansi.YELLOW,
+}
+
+def color_label(name):
+    return c(name, STAT_COLORS.get(name, Ansi.WHITE))
+
+def color_val(name, text):
+    return c(str(text), STAT_COLORS.get(name, Ansi.WHITE))
+
+def color_delta(n):
+    """+X en vert, -X en rouge, 0 en gris"""
+    if n > 0:  return c(f"+{n}", Ansi.BRIGHT_GREEN)
+    if n < 0:  return c(f"{n}", Ansi.BRIGHT_RED)
+    return c("±0", Ansi.BRIGHT_BLACK)
+
+def color_delta_crit(x):
+    """delta critique en %, même logique"""
+    if x > 0:  return c(f"+{x:.2f}", Ansi.BRIGHT_GREEN)
+    if x < 0:  return c(f"{x:.2f}", Ansi.BRIGHT_RED)
+    return c("±0.00", Ansi.BRIGHT_BLACK)
+
+def hp_gauge_text(cur, mx):
+    """Affiche 'cur/mx PV' coloré (vert/jaune/rouge selon pourcentage)"""
+    ratio = 0 if mx<=0 else cur / mx
+    if   ratio >= 0.66: col = Ansi.BRIGHT_GREEN
+    elif ratio >= 0.33: col = Ansi.BRIGHT_YELLOW
+    else:               col = Ansi.BRIGHT_RED
+    return c(f"{cur}/{mx} PV", col)
 
 # ========================== PERSONNAGES & MONSTRES ==========================
 class Character:
@@ -518,13 +623,22 @@ class Player(Character):
                     if isinstance(v,(int,float)): specs[k]=specs.get(k,0)+v
                     else: specs[k]=True
         return specs
+    
     def stats_summary(self):
         eq = {k: (v.name if v else '—') for k,v in self.equipment.items()}
-        return (
-            f"Niv:{self.level} HP:{self.hp}/{self.max_hp} ATK:{self.atk+self.temp_buffs['atk']} "
-            f"DEF:{self.defense} CRIT:{self.crit:.2f} Or:{self.gold}\n"
-            f"Equip: W:{eq['weapon']} A:{eq['armor']} Acc:{eq['accessory']}"
-        )
+        parts = [
+            f"Niv:{self.level}",
+            f"{color_label('HP')}:{hp_gauge_text(self.hp, self.max_hp)}",
+            f"{color_label('ATK')}:{color_val('ATK', self.atk + self.temp_buffs['atk'])}",
+            f"{color_label('DEF')}:{color_val('DEF', self.defense)}",
+            f"{color_label('CRIT')}:{color_val('CRIT', f'{self.crit:.2f}')}",
+            f"{color_label('OR')}:{color_val('OR', self.gold)}",
+            f"{color_label('XP')}:{color_val('XP', f'{self.xp}/30')}",
+        ]
+        line1 = "  ".join(parts)
+        line2 = (f"Équip: W:{eq['weapon']}  A:{eq['armor']}  Acc:{eq['accessory']}")
+        return line1 + "\n" + line2
+        
     def gain_xp(self, amount):
         self.xp += amount
         while self.xp >= BALANCE['level_xp_threshold']:
@@ -676,16 +790,26 @@ def effect_str(special):
 
 def item_summary(it):
     if it is None: return '—'
-    if isinstance(it, Consumable): return f"{it.name} [{it.rarity}] — {it.description}"
+    if isinstance(it, Consumable):
+        return f"{it.name} [{it.rarity}] — {it.description}"
+    # stats colorées
+    s_hp   = f"{color_label('HP')}+{color_val('HP', it.hp_bonus)}"
+    s_atk  = f"{color_label('ATK')}+{color_val('ATK', it.atk_bonus)}"
+    s_def  = f"{color_label('DEF')}+{color_val('DEF', it.def_bonus)}"
+    s_crit = f"{color_label('CRIT')}+{color_val('CRIT', f'{it.crit_bonus:.2f}')}"
     return (f"{it.name} [{it.rarity}] — {it.description} | "
-            f"HP+{it.hp_bonus} ATK+{it.atk_bonus} DEF+{it.def_bonus} CRIT+{it.crit_bonus:.2f}" + effect_str(it.special))
+            f"{s_hp} {s_atk} {s_def} {s_crit}" + effect_str(it.special))
 
 def preview_delta(player, it):
     if isinstance(it, Consumable): return '(consommable)'
     cur = player.equipment.get(it.slot)
     def tup(obj): return (0,0,0,0) if not obj else (obj.hp_bonus,obj.atk_bonus,obj.def_bonus,obj.crit_bonus)
-    ch = tuple(a-b for a,b in zip(tup(it),tup(cur)))
-    return f"Δ HP:{ch[0]:+} ATK:{ch[1]:+} DEF:{ch[2]:+} CRIT:{ch[3]:+.2f}"
+    dhp, datk, ddef, dcrit = tuple(a-b for a,b in zip(tup(it),tup(cur)))
+    return ("Δ "
+        f"{color_label('HP')}:{color_delta(dhp)} "
+        f"{color_label('ATK')}:{color_delta(datk)} "
+        f"{color_label('DEF')}:{color_delta(ddef)} "
+        f"{color_label('CRIT')}:{color_delta_crit(dcrit)}")
 
 def open_inventory(player):
     while True:
@@ -740,18 +864,28 @@ def open_inventory(player):
         if (cmd.startswith('uc') or cmd.startswith('dc')) and cmd[2:].isdigit():
             idx = int(cmd[2:]) - 1
             if 0 <= idx < len(player.consumables):
-                cns = player.consumables[idx]
                 if cmd.startswith('uc'):
+                    # on consomme l’objet tout de suite
+                    cns = player.consumables.pop(idx)
+
                     if cns.effect == 'heal':
                         player.heal(cns.power)
+
                     elif cns.effect == 'buff_atk':
-                        player.temp_buffs['atk'] += cns.power; player.temp_buffs['turns'] = 3
+                        player.temp_buffs['atk'] += cns.power
+                        player.temp_buffs['turns'] = 3
+
                     elif cns.effect == 'flee':
-                        print("Vous utilisez une pierre de rappel pour fuir le combat.")
-                    return 'fled'
-                else:  # 'dc'
+                        print("Vous utilisez une pierre de rappel : fuite réussie !")
+                        return 'fled'   # 100% de réussite, fin immédiate du combat
+
+                    # NB : si ce n'est pas une fuite, on laisse le tour se poursuivre
+                    # (DoT + riposte du monstre se feront normalement)
+
+                else:  # 'dc' = discard
                     player.consumables.pop(idx)
-            continue
+            else:
+                print("Indice de consommable invalide.")
 
 # ========================== COMBAT ==========================
 
@@ -762,7 +896,10 @@ def _combat_panel(player, monster, mname, sprite_m, depth):
     left = SPRITES['knight'] + [' '*len(SPRITES['knight'][0])]*(h-len(SPRITES['knight']))
     right= sprite_m + [' '*len(sprite_m[0])]*(h-len(sprite_m))
     for la, rb in zip(left, right): lines.append(f"{la:20}    {rb}")
-    lines.append(f"Vous: {player.hp}/{player.max_hp} PV    Ennemi: {monster.hp}/{monster.max_hp} PV")
+    # Affichage des PV
+    lines.append(
+        f"Vous: {hp_gauge_text(player.hp, player.max_hp)}    "
+        f"Ennemi: {hp_gauge_text(monster.hp, monster.max_hp)}")
     lines.append('')
     lines.append('1) Attaquer  2) Défendre  3) Consommable  4) Spéciale  5) Fuir')
     clear_screen(); draw_box(f"Combat — Étage {depth}", lines, width=max(MAP_W, 80))
@@ -821,6 +958,9 @@ def fight(player, depth):
                             elif cns.effect == 'buff_atk':
                                 player.temp_buffs['atk'] += cns.power
                                 player.temp_buffs['turns'] = 3
+                            elif cns.effect == 'flee':
+                                print("Vous utilisez une pierre de rappel : fuite réussie !")
+                                return 'fled'
                             cons.pop(i)
                             used_conso = True          # ← verrouille pour ce tour
         elif cmd=='4':
@@ -874,8 +1014,11 @@ def fight(player, depth):
             # greed bonus
             greed = p_specs.get('greed', 0.0)  # ex: 0.30 = +30%
             gold_gain = int(gold_gain * (1.0 + greed))
-            print(f"+{xp_gain} XP, +{gold_gain} or")
-
+            # Affichage des gains
+            print(
+                f"+{color_val('XP', xp_gain)} {color_label('XP')}, "
+                f"+{color_val('OR', gold_gain)} {color_label('OR')}"
+            )
             # Drop d'objet (indépendant)
             if random.random() < BALANCE['loot_item_chance']:
                 item = random_item(depth, player)
@@ -994,6 +1137,12 @@ class Floor:
             if epos:
                 self.elites.add(epos)
                 occ.add(epos)
+        def _pick_theme(depth):
+        # Variante simple : cycler selon la profondeur
+            return THEMES[depth % len(THEMES)]
+
+        self.theme = _pick_theme(depth)
+
 
     def _carve_rooms_and_corridors(self, room_attempts=16, min_size=4, max_size=8):
         rooms=[]
@@ -1082,12 +1231,14 @@ def render_map(floor, player_pos, player, fatigue):
         if p in floor.visible: floor.seen_npcs.add(p)
     for p in list(getattr(floor,'treasures',set())):
         if p in floor.visible: floor.seen_treasures.add(p)
+    # entête et bordures
+    T = floor.theme
     clear_screen()
-    print(c('┌' + '─'*MAP_W + '┐', Ansi.BRIGHT_WHITE))
+    print(c('┌' + '─'*MAP_W + '┐', T['border']))
     title = f" Donjon — Étage {floor.depth} | Fatigue {fatigue} "
     pad = max(0, MAP_W - len(title))
-    print(c('│', Ansi.BRIGHT_WHITE) + c(title + ' '*pad, Ansi.BRIGHT_YELLOW) + c('│', Ansi.BRIGHT_WHITE))
-    print(c('├' + '─'*MAP_W + '┤', Ansi.BRIGHT_WHITE))
+    print(c('│', T['border']) + c(title + ' '*pad, T['title']) + c('│', T['border']))
+    print(c('├' + '─'*MAP_W + '┤', T['border']))
 
     spr = player.sprite if getattr(player, 'sprite', None) else SPRITES.get('knight', [])
     spr_colored = colorize_sprite_by_hp(spr, player.hp, player.max_hp)
@@ -1105,25 +1256,25 @@ def render_map(floor, player_pos, player, fatigue):
                 row += ' '
                 continue
             if (x,y)==player_pos and is_vis:
-                row += c(PLAYER_ICON, Ansi.BRIGHT_GREEN)
+                row += c(PLAYER_ICON, T['player'])
             elif floor.up and (x,y)==floor.up and (is_vis or (x,y) in floor.seen_stairs):
-                row += c(STAIR_UP, Ansi.BRIGHT_CYAN)
+                row += c(STAIR_UP, T['up'])
             elif (x,y)==floor.down and (is_vis or (x,y) in floor.seen_stairs):
-                row += c(STAIR_DOWN, Ansi.BRIGHT_MAGENTA)
+                row += c(STAIR_DOWN, T['down'])
             elif (x,y) in floor.shops and (is_vis or (x,y) in floor.seen_shops):
-                row += c(SHOP_ICON, Ansi.BRIGHT_YELLOW)
+                row += c(SHOP_ICON, T['shop'])
             elif (x,y) in floor.npcs and (is_vis or (x,y) in floor.seen_npcs):
-                row += c(NPC_ICON, Ansi.BRIGHT_CYAN)
+                row += c(NPC_ICON, T['npc'])
             elif (x,y) in getattr(floor,'treasures',set()) and (is_vis or (x,y) in floor.seen_treasures):
-                row += c(TREASURE_ICON, Ansi.BRIGHT_YELLOW)
+                row += c(TREASURE_ICON, T['item'])
             elif (x,y) in getattr(floor,'elites',set()):  # toujours visible
-                row += c(ELITE_ICON, Ansi.BRIGHT_RED)
+                row += c(ELITE_ICON, T['elite'])
             elif is_vis:
                 # on NE MONTRE PAS les monstres volontairement pour garder la surprise
-                row += c('·', Ansi.DIM) if ch==FLOOR else c('#', Ansi.BRIGHT_BLACK)
+                row += c('·', T['floor']) if ch==FLOOR else c('#', T['wall'])
             else:
                 # zone connue mais non visible : terrain seulement, en atténué
-                row += (c('·', Ansi.DIM) if ch==FLOOR else c('#', Ansi.BRIGHT_BLACK))
+                row += c('·', T['floor']) if ch==FLOOR else c('#', T['wall'])
             side = ''
         # Affichage du sprite du joueur à côté de la carte    
         if SHOW_SIDE_SPRITE:
@@ -1137,8 +1288,8 @@ def render_map(floor, player_pos, player, fatigue):
                 side = '  ' + spr_colored[y - top_off]  # 2 espaces puis la ligne du sprite
             else:
                 side = '  ' + ' ' * spr_w
-        print(c('│', Ansi.BRIGHT_WHITE) + row + c('│', Ansi.BRIGHT_WHITE)+ (side if SHOW_SIDE_SPRITE else ''))
-    print(c('└' + '─' * MAP_W + '┘', Ansi.BRIGHT_WHITE))
+        print(c('│', T['border']) + row + c('│', T['border'])+ (side if SHOW_SIDE_SPRITE else ''))
+    print(c('└' + '─' * MAP_W + '┘', T['border']))
     print(c('[ZQSD/WASD] déplacer • E parler/valider • B boutique (sur $) • J journal • I inventaire • X quitter', Ansi.BRIGHT_BLACK))
     print(player.stats_summary())
 
@@ -1184,7 +1335,7 @@ def open_shop(player, depth):
     while True:
         rows=[]
         left_title = c('Vendeur', Ansi.BRIGHT_WHITE)
-        right_title= c(f'Vous (or: {player.gold})', Ansi.BRIGHT_WHITE)
+        right_title = f"Vous (or: {c(str(player.gold), Ansi.YELLOW)})"
         rows.append(f"{left_title:<{LEFT_W}}{right_title}")
         rows.append('-'*BOX_W)
         max_rows = max(len(stock), len(player.inventory)) or 1
