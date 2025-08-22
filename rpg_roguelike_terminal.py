@@ -311,6 +311,12 @@ BALANCE = {
 
     # Soin de 50% des PV max à chaque montée de niveau
     'level_heal_ratio': 0.50,
+    
+    # Régénération de PV par tour
+    'regen_cap_flat': 5,      # plafond dur par tour (ex: 5 PV)
+    'regen_cap_frac': 0.05,   # plafond % PV max par tour (ex: 5%)
+    'regen_on_hit_mult': 0.5, # si on a pris des dégâts ce tour : regen × 0.5
+    'regen_every_n_turns': 1, # 1 = chaque tour, 2 = un tour sur deux, etc.
 }
 
 # Déplacements: ZQSD/WASD seulement
@@ -843,7 +849,7 @@ def open_inventory(player):
         # --- Aide commandes ---
         rows.append("")
         rows.append("Actions : e<num> équiper  | d<num> jeter  | uc<num> utiliser conso  | dc<num> jeter conso  | q retour")
-        clear_screen(); draw_box("Inventaire", rows, width=max(MAP_W, 110))
+        clear_screen(); draw_box("Inventaire", rows, width=max(MAP_W, 140))
         cmd = input("> ").strip().lower()
 
         if cmd == 'q':
@@ -920,8 +926,11 @@ def fight(player, depth):
     monster.max_hp = mdef['hp']
     sprite_m = mdef['sprite']
     p_specs = player.all_specials(); poison_turns=0
-    
+    turn_idx = 0
+
     while player.is_alive() and monster.is_alive():
+        turn_idx += 1
+        took_damage_this_turn = False
         used_conso = False
         _combat_panel(player, monster, mdef['name'], sprite_m, depth)
         cmd=input('> ').strip()
@@ -988,20 +997,37 @@ def fight(player, depth):
         # Riposte
         if monster.is_alive():
             mdmg = compute_damage(monster, player)
-            if defend: mdmg//=2
-            if random.random() < p_specs.get('dodge',0): print('Vous esquivez !'); mdmg=0
-            player.take_damage(mdmg); print(c(f"{mdef['name']} inflige {mdmg} dégâts.", Ansi.BRIGHT_RED))
-            if p_specs.get('thorns',0)>0 and mdmg>0:
-                thorn = p_specs['thorns']; monster.take_damage(thorn); print(f"Épines renvoient {thorn} dégâts.")
+            if defend: mdmg //= 2
+            if random.random() < p_specs.get('dodge', 0.0):
+                print('Vous esquivez !'); mdmg = 0
+            player.take_damage(mdmg)
+            if mdmg > 0: took_damage_this_turn = True
+            print(c(f"{mdef['name']} inflige {mdmg} dégâts.", Ansi.BRIGHT_RED))
+            if p_specs.get('thorns', 0) and mdmg > 0:
+                monster.take_damage(p_specs['thorns'])
+                print(f"Épines renvoient {p_specs['thorns']} dégâts.")
         # Effets temporaires        
-        if player.temp_buffs['turns']>0:
-            player.temp_buffs['turns']-=1
-            if player.temp_buffs['turns']==0: player.temp_buffs['atk']=0
+        if player.temp_buffs['turns'] > 0:
+            player.temp_buffs['turns'] -= 1
+            if player.temp_buffs['turns'] == 0:
+                player.temp_buffs['atk'] = 0
         # Régénération    
-        rg = p_specs.get('regen', 0)
-        if rg:
-            player.heal(rg)
-            print(f"Régénération +{rg} PV.")
+        raw_rg = int(p_specs.get('regen', 0))
+        if raw_rg > 0:
+            # cadence : 1 = chaque tour, 2 = un tour sur deux, etc.
+            if turn_idx % max(1, BALANCE.get('regen_every_n_turns', 1)) == 0:
+                cap_flat = int(BALANCE.get('regen_cap_flat', 5))
+                cap_frac = int(player.max_hp * BALANCE.get('regen_cap_frac', 0.05))
+                cap = max(1, min(cap_flat, cap_frac))
+                rg = min(raw_rg, cap)
+                if took_damage_this_turn:
+                    rg = int(rg * BALANCE.get('regen_on_hit_mult', 0.5))  # grave wounds
+                if rg > 0 and player.is_alive():
+                    before = player.hp
+                    player.heal(rg)
+                    healed = player.hp - before
+                    if healed > 0:
+                        print(f"Régénération +{healed} PV.")
 
         time.sleep(0.6)
 
@@ -1293,99 +1319,185 @@ def render_map(floor, player_pos, player, fatigue):
     print(c('[ZQSD/WASD] déplacer • E parler/valider • B boutique (sur $) • J journal • I inventaire • X quitter', Ansi.BRIGHT_BLACK))
     print(player.stats_summary())
 
+# ========================== COFFRE ==========================
+def open_treasure_choice(player, depth):
+    """
+    Coffre : propose 3 objets (jamais de consommables ici pour éviter l'ambiguïté).
+    Retourne True si le joueur a pris quelque chose, False sinon.
+    N'affiche que des messages, ne touche pas aux trésors de l'étage (la boucle d'explo s'en charge).
+    """
+    try:
+        # 3 tirages d'objets d'équipement uniquement
+        choices = []
+        for _ in range(3):
+            it = random_item(depth, player)
+            # si jamais random_item renvoie un consommable (selon ton implémentation), re-roll en item
+            if isinstance(it, Consumable):
+                # relance jusqu'à obtenir un "Item" (avec garde-fou)
+                for __ in range(6):
+                    it = random_item(depth, player)
+                    if not isinstance(it, Consumable):
+                        break
+            choices.append(it)
+
+        # fallback: si malgré tout on a un consommable, on le convertit en item communs
+        choices = [it if not isinstance(it, Consumable) else random.choice(COMMON_ITEMS) for it in choices]
+
+        while True:
+            rows = [f"{i+1}) {item_summary(it)}  {preview_delta(player,it)}" for i,it in enumerate(choices)]
+            rows += ["", "Choisissez 1-3, ou 'q' pour ignorer"]
+            clear_screen()
+            # Si tu as des thèmes d'étage, passe theme=floor.theme ici via l'appelant
+            draw_box('Trésor !', rows, width=max(140, MAP_W))
+
+            cmd = input('> ').strip().lower()
+            if cmd in ('q',''):
+                return False
+
+            if cmd in ('1','2','3'):
+                idx = int(cmd) - 1
+                if 0 <= idx < len(choices):
+                    it = choices[idx]
+                    # Ajout dans le bon sac
+                    if isinstance(it, Consumable):
+                        # Par sécurité, mais en principe on n'en a pas ici
+                        if len(player.consumables) < player.consumables_limit:
+                            player.consumables.append(it)
+                            draw_box('Trésor', [f"Vous prenez: {item_summary(it)} (consommable)"], width=84)
+                            pause()
+                            return True
+                        else:
+                            draw_box('Trésor', ["Sac de consommables plein."], width=84)
+                            pause()
+                            return False
+                    else:
+                        if len(player.inventory) < player.inventory_limit:
+                            player.inventory.append(it)
+                            draw_box('Trésor', [f"Vous prenez: {item_summary(it)}"], width=84)
+                            pause()
+                            return True
+                        else:
+                            draw_box('Trésor', ["Inventaire plein."], width=84)
+                            pause()
+                            return False
+                # sinon, on reboucle
+    except Exception as e:
+        # garde-fou: pas de crash jeu si une anomalie survient
+        draw_box('Erreur coffre', [repr(e)], width=84)
+        pause()
+        return False
+
 # ========================== MARCHAND (double panneau) ==========================
 
 def shop_stock_for_depth(depth):
     stock=[random_consumable() for _ in range(3)]
     for _ in range(3+depth//2): stock.append(random_item(depth, DummyPlayer()))
     return stock
-
-def open_treasure_choice(player, depth):
-    # Choisir 1 objet parmi 3
-    choices = [random_item(depth, player) for _ in range(3)]
-    while True:
-        rows = [f"{i+1}) {item_summary(it)}  {preview_delta(player,it)}" for i,it in enumerate(choices)]
-        rows += ["", "Choisissez 1-3 ou q pour ignorer"]
-        clear_screen(); draw_box('Trésor !', rows, width=max(84, MAP_W))
-        cmd = input('> ').strip().lower()
-        if cmd in ('q',''): return False
-        if cmd in ('1','2','3'):
-            idx=int(cmd)-1
-            if 0<=idx<len(choices):
-                it=choices[idx]
-                if isinstance(it, Consumable):
-                    if len(player.consumables) < player.consumables_limit:
-                        player.consumables.append(it)
-                    else:
-                        draw_box('Trésor', ["Sac de consommables plein."], width=84); pause(); return True
-                else:
-                    if len(player.inventory) < player.inventory_limit:
-                        player.inventory.append(it)
-                    else:
-                        draw_box('Trésor', ["Inventaire plein."], width=84); pause(); return True
-                return True
-
-
+    
 def open_shop(player, depth):
-
-    LEFT_W = 92        # largeur colonne vendeur
-    BOX_W  = 160       # largeur totale de l'encadré
-
+    BOX_W  = max(120, MAP_W + 30)
     stock = shop_stock_for_depth(depth)
-    while True:
-        rows=[]
-        left_title = c('Vendeur', Ansi.BRIGHT_WHITE)
-        right_title = f"Vous (or: {c(str(player.gold), Ansi.YELLOW)})"
-        rows.append(f"{left_title:<{LEFT_W}}{right_title}")
-        rows.append('-'*BOX_W)
-        max_rows = max(len(stock), len(player.inventory)) or 1
-        for i in range(max_rows):
-            l = ''
-            if i < len(stock):
-                it = stock[i]; price = price_of(it)
-                label = item_summary(it)
-                if not isinstance(it, Consumable): label = c(label, rarity_color(it.rarity))
-                l = f"{i+1:>2}) {label}  — {price} or"
-            r = ''
-            if i < len(player.inventory):
-                pit = player.inventory[i]; val = max(5, price_of(pit)//2)
-                r = f"{i+1:>2}) {item_summary(pit)}  — vend: {val} or"
-            rows.append(f"{l:<{LEFT_W}} | {r}")
-        rows.append('')
-        rows.append('Commandes: numéro = acheter à gauche • v<num> = vendre votre item • s<num> = détails votre item • q = quitter')
-        clear_screen(); draw_box(f"Marchand (Étage {depth})", rows, width=BOX_W)
-        cmd=input('> ').strip().lower()
-        if cmd=='q': break
-        if cmd.isdigit():
-            idx=int(cmd)-1
-            if 0 <= idx < len(stock):
-                    it = stock[idx]
-                    price = price_of(it)
-                    if player.gold < price:
-                        print('Or insuffisant.'); time.sleep(0.8); continue
 
-                    if isinstance(it, Consumable):
-                        # sac dédié aux consommables
-                        if len(player.consumables) >= player.consumables_limit:
-                            print('Sac de consommables plein.'); time.sleep(0.8); continue
-                        player.gold -= price
-                        player.consumables.append(it)
-                        stock.pop(idx)
-                    else:
-                        # inventaire normal
-                        if len(player.inventory) >= player.inventory_limit:
-                            print('Inventaire plein.'); time.sleep(0.8); continue
-                        player.gold -= price
-                        player.inventory.append(it)
-                        stock.pop(idx)
-        elif cmd.startswith('v') and cmd[1:].isdigit():
-            idx=int(cmd[1:])-1
-            if 0<=idx<len(player.inventory):
-                it=player.inventory.pop(idx); gain=max(5, price_of(it)//2); player.gold+=gain
-        elif cmd.startswith('s') and cmd[1:].isdigit():
-            idx=int(cmd[1:])-1
-            if 0<=idx<len(player.inventory):
-                it=player.inventory[idx]; print(item_summary(it)); print(preview_delta(player,it)); pause('Entrée...')
+    while True:
+        # ==== SECTION VENDEUR (achats) ====
+        seller_rows = []
+        seller_rows.append(f"{c('Marchand', Ansi.BRIGHT_WHITE)} — Étage {depth}")
+        seller_rows.append(f"Or dispo : {c(str(player.gold), Ansi.YELLOW)}")
+        seller_rows.append('')
+        if not stock:
+            seller_rows.append(c('(Rupture de stock)', Ansi.BRIGHT_BLACK))
+        else:
+            for i, it in enumerate(stock, 1):
+                price = price_of(it)
+                label = item_summary(it)
+                if not isinstance(it, Consumable):
+                    label = c(label, rarity_color(it.rarity))
+                seller_rows.append(f"{i:>2}) {label}  — {price} or")
+        seller_rows.append('')
+        seller_rows.append(c("Commandes :", Ansi.BRIGHT_WHITE))
+        seller_rows.append(" - <num> : acheter l’item du vendeur")
+        seller_rows.append(" - v<num> : vendre VOTRE item (voir encadré du bas)")
+        seller_rows.append(" - s<num> : détails de VOTRE item (voir encadré du bas)")
+        seller_rows.append(" - q : quitter la boutique")
+
+        # ==== SECTION JOUEUR (ventes) ====
+        player_rows = []
+        player_rows.append(c('Vos objets vendables', Ansi.BRIGHT_MAGENTA))
+        if not player.inventory:
+            player_rows.append(c('(Aucun objet vendable dans l’inventaire)', Ansi.BRIGHT_BLACK))
+        else:
+            for i, pit in enumerate(player.inventory, 1):
+                val = max(5, price_of(pit)//2)
+                player_rows.append(f"{i:>2}) {item_summary(pit)}  — vend: {val} or")
+
+        # (Optionnel) Afficher vos consommables en lecture seule
+        if getattr(player, 'consumables', None):
+            player_rows.append('')
+            player_rows.append(c('Vos consommables (non vendables)', Ansi.BRIGHT_CYAN))
+            if not player.consumables:
+                player_rows.append(c('(Vide)', Ansi.BRIGHT_BLACK))
+            else:
+                for cns in player.consumables:
+                    player_rows.append(f" • {item_summary(cns)}")
+
+        # ==== Rendu : deux boîtes l’une sous l’autre ====
+        clear_screen()
+        draw_box(f"Vendeur (Étage {depth})", seller_rows, width=BOX_W)
+        print()  # petite marge visuelle
+        draw_box("Vos objets (vendre: v<num>  •  détails: s<num>)", player_rows, width=BOX_W)
+
+        # ==== Commandes ====
+        cmd = input('> ').strip().lower()
+        if cmd == 'q':
+            break
+        # ACHAT — numéro simple (liste du vendeur)
+        if cmd.isdigit():
+            idx = int(cmd) - 1
+            if 0 <= idx < len(stock):
+                it = stock[idx]
+                price = price_of(it)
+                if player.gold < price:
+                    print('Or insuffisant.'); time.sleep(0.8); continue
+
+                if isinstance(it, Consumable):
+                    # sac dédié aux consommables (non vendables)
+                    if len(player.consumables) >= player.consumables_limit:
+                        print('Sac de consommables plein.'); time.sleep(0.8); continue
+                    player.gold -= price
+                    player.consumables.append(it)
+                    stock.pop(idx)
+                else:
+                    # inventaire normal
+                    if len(player.inventory) >= player.inventory_limit:
+                        print('Inventaire plein.'); time.sleep(0.8); continue
+                    player.gold -= price
+                    player.inventory.append(it)
+                    stock.pop(idx)
+            else:
+                print("Numéro invalide."); time.sleep(0.6)
+            continue
+        # VENTE — v<num> (votre inventaire uniquement)
+        if cmd.startswith('v') and cmd[1:].isdigit():
+            idx = int(cmd[1:]) - 1
+            if 0 <= idx < len(player.inventory):
+                it = player.inventory.pop(idx)
+                gain = max(5, price_of(it)//2)
+                player.gold += gain
+            else:
+                print("Numéro invalide pour la vente."); time.sleep(0.6)
+            continue
+        # DÉTAILS — s<num> (votre inventaire)
+        if cmd.startswith('s') and cmd[1:].isdigit():
+            idx = int(cmd[1:]) - 1
+            if 0 <= idx < len(player.inventory):
+                it = player.inventory[idx]
+                print(item_summary(it))
+                print(preview_delta(player, it))
+                pause('Entrée...')
+            else:
+                print("Numéro invalide pour les détails."); time.sleep(0.6)
+            continue
+        print('Commande inconnue.'); time.sleep(0.6)
 
 # ========================== ENTRÉE UTILISATEUR ==========================
 
