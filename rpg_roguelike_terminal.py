@@ -87,6 +87,75 @@ class Ansi:
 SUPPORTS_ANSI = True
 SHOW_SIDE_SPRITE = True
 
+# Truecolor (RGB) — pour de vrais pastels si le terminal le supporte
+USE_TRUECOLOR = True  # passe à False si rendu bizarre
+
+def rgb(r,g,b): return f"\x1b[38;2;{r};{g};{b}m"
+PASTEL = lambda r,g,b: rgb(r,g,b) if (SUPPORTS_ANSI and USE_TRUECOLOR) else Ansi.WHITE
+
+THEMES = [
+    # Classique
+    {
+        'name':'stone',
+        'border': Ansi.BRIGHT_WHITE,
+        'title':  Ansi.BRIGHT_YELLOW,
+        'floor':  Ansi.DIM,             # points de sol
+        'wall':   Ansi.BRIGHT_BLACK,
+        'npc':    Ansi.BRIGHT_CYAN,
+        'shop':   Ansi.BRIGHT_YELLOW,
+        'up':     Ansi.BRIGHT_CYAN,
+        'down':   Ansi.BRIGHT_MAGENTA,
+        'elite':  Ansi.BRIGHT_RED,
+        'item':   Ansi.BRIGHT_YELLOW,
+        'player': Ansi.BRIGHT_GREEN,
+    },
+    # Pastel “mousse”
+    {
+        'name':'moss',
+        'border': PASTEL(220,230,220),
+        'title':  PASTEL(170,200,170),
+        'floor':  PASTEL(150,170,150),
+        'wall':   PASTEL(90,110,90),
+        'npc':    PASTEL(120,190,210),
+        'shop':   PASTEL(230,210,140),
+        'up':     PASTEL(150,210,230),
+        'down':   PASTEL(210,150,230),
+        'elite':  PASTEL(230,120,120),
+        'item':   PASTEL(230,210,140),
+        'player': PASTEL(160,230,160),
+    },
+    # Pastel “ardoise”
+    {
+        'name':'slate',
+        'border': PASTEL(220,220,235),
+        'title':  PASTEL(180,180,220),
+        'floor':  PASTEL(160,165,185),
+        'wall':   PASTEL(100,105,125),
+        'npc':    PASTEL(160,200,230),
+        'shop':   PASTEL(230,200,150),
+        'up':     PASTEL(150,200,230),
+        'down':   PASTEL(210,160,230),
+        'elite':  PASTEL(230,140,140),
+        'item':   PASTEL(230,200,150),
+        'player': PASTEL(170,220,190),
+    },
+    # Pastel “sable”
+    {
+        'name':'sand',
+        'border': PASTEL(235,230,220),
+        'title':  PASTEL(210,190,140),
+        'floor':  PASTEL(210,200,185),
+        'wall':   PASTEL(160,150,130),
+        'npc':    PASTEL(160,200,210),
+        'shop':   PASTEL(230,190,120),
+        'up':     PASTEL(150,190,220),
+        'down':   PASTEL(210,150,220),
+        'elite':  PASTEL(220,110,110),
+        'item':   PASTEL(230,190,120),
+        'player': PASTEL(180,210,170),
+    },
+]
+
 def enable_windows_ansi():
     """Active l'affichage ANSI sous Windows 10+"""
     global SUPPORTS_ANSI
@@ -1055,6 +1124,12 @@ class Floor:
             if epos:
                 self.elites.add(epos)
                 occ.add(epos)
+        def _pick_theme(depth):
+        # Variante simple : cycler selon la profondeur
+            return THEMES[depth % len(THEMES)]
+
+        self.theme = _pick_theme(depth)
+
 
     def _carve_rooms_and_corridors(self, room_attempts=16, min_size=4, max_size=8):
         rooms=[]
@@ -1143,12 +1218,14 @@ def render_map(floor, player_pos, player, fatigue):
         if p in floor.visible: floor.seen_npcs.add(p)
     for p in list(getattr(floor,'treasures',set())):
         if p in floor.visible: floor.seen_treasures.add(p)
+    # entête et bordures
+    T = floor.theme
     clear_screen()
-    print(c('┌' + '─'*MAP_W + '┐', Ansi.BRIGHT_WHITE))
+    print(c('┌' + '─'*MAP_W + '┐', T['border']))
     title = f" Donjon — Étage {floor.depth} | Fatigue {fatigue} "
     pad = max(0, MAP_W - len(title))
-    print(c('│', Ansi.BRIGHT_WHITE) + c(title + ' '*pad, Ansi.BRIGHT_YELLOW) + c('│', Ansi.BRIGHT_WHITE))
-    print(c('├' + '─'*MAP_W + '┤', Ansi.BRIGHT_WHITE))
+    print(c('│', T['border']) + c(title + ' '*pad, T['title']) + c('│', T['border']))
+    print(c('├' + '─'*MAP_W + '┤', T['border']))
 
     spr = player.sprite if getattr(player, 'sprite', None) else SPRITES.get('knight', [])
     spr_colored = colorize_sprite_by_hp(spr, player.hp, player.max_hp)
@@ -1166,25 +1243,25 @@ def render_map(floor, player_pos, player, fatigue):
                 row += ' '
                 continue
             if (x,y)==player_pos and is_vis:
-                row += c(PLAYER_ICON, Ansi.BRIGHT_GREEN)
+                row += c(PLAYER_ICON, T['player'])
             elif floor.up and (x,y)==floor.up and (is_vis or (x,y) in floor.seen_stairs):
-                row += c(STAIR_UP, Ansi.BRIGHT_CYAN)
+                row += c(STAIR_UP, T['up'])
             elif (x,y)==floor.down and (is_vis or (x,y) in floor.seen_stairs):
-                row += c(STAIR_DOWN, Ansi.BRIGHT_MAGENTA)
+                row += c(STAIR_DOWN, T['down'])
             elif (x,y) in floor.shops and (is_vis or (x,y) in floor.seen_shops):
-                row += c(SHOP_ICON, Ansi.BRIGHT_YELLOW)
+                row += c(SHOP_ICON, T['shop'])
             elif (x,y) in floor.npcs and (is_vis or (x,y) in floor.seen_npcs):
-                row += c(NPC_ICON, Ansi.BRIGHT_CYAN)
+                row += c(NPC_ICON, T['npc'])
             elif (x,y) in getattr(floor,'treasures',set()) and (is_vis or (x,y) in floor.seen_treasures):
-                row += c(TREASURE_ICON, Ansi.BRIGHT_YELLOW)
+                row += c(TREASURE_ICON, T['item'])
             elif (x,y) in getattr(floor,'elites',set()):  # toujours visible
-                row += c(ELITE_ICON, Ansi.BRIGHT_RED)
+                row += c(ELITE_ICON, T['elite'])
             elif is_vis:
                 # on NE MONTRE PAS les monstres volontairement pour garder la surprise
-                row += c('·', Ansi.DIM) if ch==FLOOR else c('#', Ansi.BRIGHT_BLACK)
+                row += c('·', T['floor']) if ch==FLOOR else c('#', T['wall'])
             else:
                 # zone connue mais non visible : terrain seulement, en atténué
-                row += (c('·', Ansi.DIM) if ch==FLOOR else c('#', Ansi.BRIGHT_BLACK))
+                row += c('·', T['floor']) if ch==FLOOR else c('#', T['wall'])
             side = ''
         # Affichage du sprite du joueur à côté de la carte    
         if SHOW_SIDE_SPRITE:
@@ -1198,8 +1275,8 @@ def render_map(floor, player_pos, player, fatigue):
                 side = '  ' + spr_colored[y - top_off]  # 2 espaces puis la ligne du sprite
             else:
                 side = '  ' + ' ' * spr_w
-        print(c('│', Ansi.BRIGHT_WHITE) + row + c('│', Ansi.BRIGHT_WHITE)+ (side if SHOW_SIDE_SPRITE else ''))
-    print(c('└' + '─' * MAP_W + '┘', Ansi.BRIGHT_WHITE))
+        print(c('│', T['border']) + row + c('│', T['border'])+ (side if SHOW_SIDE_SPRITE else ''))
+    print(c('└' + '─' * MAP_W + '┘', T['border']))
     print(c('[ZQSD/WASD] déplacer • E parler/valider • B boutique (sur $) • J journal • I inventaire • X quitter', Ansi.BRIGHT_BLACK))
     print(player.stats_summary())
 
