@@ -1,2 +1,2 @@
 # ROGMINAL
-rogue like game for terminal
+last updated .exe file
