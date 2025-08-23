@@ -177,7 +177,6 @@ def c(text, *styles):
     return ''.join(styles) + str(text) + Ansi.RESET
 
 # ========================== WIDGET D'ENCADREMENT ==========================
-
 _ansi_re = re.compile(r"\x1b\[[0-9;]*m")
 
 def visible_len(s: str) -> int:
@@ -226,7 +225,6 @@ def draw_box(title: str, lines, width: int | None = None):
     print(c(bot, Ansi.BRIGHT_WHITE))
 
 # ========================== RENDU DU PERSONNAGE ==========================
-
 def _tint_line_red(line: str, strong=False):
     # teinte toute la ligne ; strong = plus vif
     color = Ansi.BRIGHT_RED if strong else Ansi.RED
@@ -642,8 +640,7 @@ class Player(Character):
             f"{color_label('XP')}:{color_val('XP', f'{self.xp}/30')}",
         ]
         line1 = "  ".join(parts)
-        line2 = (f"Équip: W:{eq['weapon']}  A:{eq['armor']}  Acc:{eq['accessory']}")
-        return line1 + "\n" + line2
+        return line1
         
     def gain_xp(self, amount):
         self.xp += amount
@@ -672,7 +669,6 @@ MONSTER_DEFS = [
 ]
 
 # ========================== UTILITAIRES ==========================
-
 def clear_screen(): os.system('cls' if os.name=='nt' else 'clear')
 
 def pause(msg='Appuyez sur Entrée pour continuer...'): input(msg)
@@ -687,7 +683,6 @@ def rarity_color(r):
     }.get(r, Ansi.WHITE)
 
 # ========================== SCALING ==========================
-
 def _scaled_fraction(base, lvl, per_lvl, softcap_lvl, soft_mult):
     """Calcule 1 + bonus de scaling avec soft cap."""
     l1 = min(lvl, softcap_lvl)
@@ -787,7 +782,6 @@ def price_of(it):
     return int(max(8, score*rar*spec))
 
 # ========================== INVENTAIRE ==========================
-
 def effect_str(special):
     if not special: return ''
     parts=[]
@@ -818,83 +812,144 @@ def preview_delta(player, it):
         f"{color_label('CRIT')}:{color_delta_crit(dcrit)}")
 
 def open_inventory(player):
+    """
+    Inventaire 'bi-panneau' façon marchand :
+    - Fiche héros (stats colorées)
+    - Équipement (3 slots)
+    - Sac Objets (équipables/vendables) — actions : e<num>, d<num>, s<num>
+    - Sac Consommables (non vendables) — actions : uc<num>, dc<num>
+    """
+    BOX_W = max(120, MAP_W + 30)
+
     while True:
-        rows = []
-        # --- SECTION OBJETS (équipables & divers) ---
-        rows.append(c("Objets", Ansi.BRIGHT_WHITE))
+        # === PANNEAU 1 : Fiche & Équipement ===
+        top_rows = []
+        # Fiche
+        top_rows.append(c('Fiche du héros', Ansi.BRIGHT_WHITE))
+        top_rows.append(player.stats_summary())
+        top_rows.append('')
+
+        # Équipement
+        top_rows.append(c('Équipement', Ansi.BRIGHT_CYAN))
+        slots = [('weapon', 'Arme'), ('armor','Armure'), ('accessory','Accessoire')]
+        for key,label in slots:
+            it = player.equipment.get(key)
+            top_rows.append(f"- {label}: {item_summary(it) if it else '—'}")
+        top_rows.append('')
+
+        # Infos de capacité
+        top_rows.append(
+            f"Sac Objets : {len(player.inventory)}/{player.inventory_limit}   |   "
+            f"Sac Consommables : {len(getattr(player,'consumables',[]))}/{getattr(player,'consumables_limit',0)}"
+        )
+
+        # === PANNEAU 2 : Sac Objets (vendables/équipables) ===
+        bag_rows = []
+        bag_rows.append(c('Sac — Objets', Ansi.BRIGHT_MAGENTA))
         if not player.inventory:
-            rows.append("  (aucun)")
+            bag_rows.append(c('(Vide)', Ansi.BRIGHT_BLACK))
         else:
             for i, it in enumerate(player.inventory, 1):
                 label = item_summary(it)
                 if not isinstance(it, Consumable):
+                    # colorer par rareté
                     label = c(label, rarity_color(it.rarity))
-                rows.append(f"{i:>2}) {label}  {preview_delta(player, it)}")
+                bag_rows.append(f"{i:>2}) {label}   {preview_delta(player, it)}")
 
-        # --- SECTION CONSOMMABLES (sac dédié) ---
-        rows.append("")
-        rows.append(c("Consommables (non vendables)", Ansi.BRIGHT_WHITE))
-        if not player.consumables:
-            rows.append("  (aucun)")
+        bag_rows.append('')
+        bag_rows.append(c('Actions objets :', Ansi.BRIGHT_WHITE))
+        bag_rows.append(" - e<num> : équiper l’objet")
+        bag_rows.append(" - d<num> : jeter l’objet")
+        bag_rows.append(" - s<num> : détails de l’objet")
+        bag_rows.append(" - q : quitter l’inventaire")
+
+        # === PANNEAU 3 : Sac Consommables (non vendables) ===
+        conso_rows = []
+        conso_rows.append(c('Sac — Consommables (non vendables)', Ansi.BRIGHT_CYAN))
+        cons = getattr(player, 'consumables', [])
+        if not cons:
+            conso_rows.append(c('(Vide)', Ansi.BRIGHT_BLACK))
         else:
-            for i, cns in enumerate(player.consumables, 1):
-                rows.append(f"c{i:>2}) {item_summary(cns)}")
+            for i, cns in enumerate(cons, 1):
+                conso_rows.append(f"{i:>2}) {item_summary(cns)}")
 
-        # --- Équipement actuel ---
-        rows.append("")
-        rows.append("Équipement:")
-        for slot, it in player.equipment.items():
-            rows.append(f"{slot}: {item_summary(it) if it else '—'}")
+        conso_rows.append('')
+        conso_rows.append(c('Actions consommables :', Ansi.BRIGHT_WHITE))
+        conso_rows.append(" - uc<num> : utiliser le consommable")
+        conso_rows.append(" - dc<num> : jeter le consommable")
 
-        # --- Aide commandes ---
-        rows.append("")
-        rows.append("Actions : e<num> équiper  | d<num> jeter  | uc<num> utiliser conso  | dc<num> jeter conso  | q retour")
-        clear_screen(); draw_box("Inventaire", rows, width=max(MAP_W, 140))
-        cmd = input("> ").strip().lower()
+        # === Rendu ===
+        clear_screen()
+        draw_box('Inventaire — Fiche & Équipement', top_rows, width=BOX_W)
+        print()
+        draw_box('Inventaire — Sac Objets', bag_rows, width=BOX_W)
+        print()
+        draw_box('Inventaire — Sac Consommables', conso_rows, width=BOX_W)
 
+        # === Saisie ===
+        cmd = input('> ').strip().lower()
         if cmd == 'q':
             break
 
-        # Équiper / jeter OBJETS
-        if len(cmd) >= 2 and cmd[1:].isdigit() and cmd[0] in ('e','d'):
+        # OBJETS : équiper / jeter / détails (e<num>, d<num>, s<num>)
+        if (cmd.startswith('e') or cmd.startswith('d') or cmd.startswith('s')) and cmd[1:].isdigit():
             idx = int(cmd[1:]) - 1
             if 0 <= idx < len(player.inventory):
                 it = player.inventory[idx]
-                if cmd[0] == 'e' and not isinstance(it, Consumable):
-                    player.equip(it); player.inventory.pop(idx)
-                elif cmd[0] == 'd':
+
+                # s<num> — détails
+                if cmd[0] == 's':
+                    print(item_summary(it))
+                    print(preview_delta(player, it))
+                    pause('Entrée...')
+                    continue
+
+                # e<num> — équiper (seulement Items, pas Consommables)
+                if cmd[0] == 'e':
+                    if isinstance(it, Consumable):
+                        print("Ce consommable ne peut pas être équipé."); time.sleep(0.7); continue
+                    # équiper : retire du sac puis équipe (l’ancien revient dans le sac via player.equip)
                     player.inventory.pop(idx)
+                    player.equip(it)
+                    print(f"Vous équipez {it.name}."); time.sleep(0.6)
+                    continue
+
+                # d<num> — jeter
+                if cmd[0] == 'd':
+                    trash = player.inventory.pop(idx)
+                    print(f"Jeté: {getattr(trash, 'name', '?')}"); time.sleep(0.6)
+                    continue
+            else:
+                print("Index d’objet invalide."); time.sleep(0.6)
             continue
 
-        # Utiliser / jeter CONSOMMABLES (préfixe 'uc' / 'dc')
+        # CONSOMMABLES : utiliser / jeter (uc<num>, dc<num>)
         if (cmd.startswith('uc') or cmd.startswith('dc')) and cmd[2:].isdigit():
             idx = int(cmd[2:]) - 1
-            if 0 <= idx < len(player.consumables):
+            cons = getattr(player, 'consumables', [])
+            if 0 <= idx < len(cons):
                 if cmd.startswith('uc'):
-                    # on consomme l’objet tout de suite
-                    cns = player.consumables.pop(idx)
-
+                    cns = cons.pop(idx)  # consommer tout de suite
                     if cns.effect == 'heal':
-                        player.heal(cns.power)
-
+                        player.heal(cns.power); print(c(f"+{cns.power} PV", Ansi.GREEN))
                     elif cns.effect == 'buff_atk':
-                        player.temp_buffs['atk'] += cns.power
-                        player.temp_buffs['turns'] = 3
-
+                        player.temp_buffs['atk'] += cns.power; player.temp_buffs['turns'] = 3
+                        print(c(f"ATK +{cns.power} (3 tours)", Ansi.RED))
                     elif cns.effect == 'flee':
-                        print("Vous utilisez une pierre de rappel : fuite réussie !")
-                        return 'fled'   # 100% de réussite, fin immédiate du combat
-
-                    # NB : si ce n'est pas une fuite, on laisse le tour se poursuivre
-                    # (DoT + riposte du monstre se feront normalement)
-
-                else:  # 'dc' = discard
-                    player.consumables.pop(idx)
+                        # en inventaire (hors combat) : on peut choisir d'ignorer/transformer
+                        print("La pierre de rappel n’a d’effet qu’en combat."); time.sleep(0.8)
+                    else:
+                        print("Consommable utilisé."); time.sleep(0.6)
+                else:  # dc<num>
+                    cons.pop(idx); print("Consommable jeté."); time.sleep(0.6)
             else:
-                print("Indice de consommable invalide.")
+                print("Index de consommable invalide."); time.sleep(0.6)
+            continue
+
+        print('Commande inconnue.'); time.sleep(0.6)
+
 
 # ========================== COMBAT ==========================
-
 def _combat_panel(player, monster, mname, sprite_m, depth):
     lines=[]
     lines.append(f"{player.name} vs {mname}")
@@ -1093,7 +1148,6 @@ def maybe_autocomplete_quests(player):
         draw_box('Quêtes terminées', lines, width=72); pause()
 
 # ========================== JOURNAL ==========================
-
 def journal(player):
     rows=[]
     if not player.quests_active and not player.quests_done:
@@ -1169,7 +1223,6 @@ class Floor:
 
         self.theme = _pick_theme(depth)
 
-
     def _carve_rooms_and_corridors(self, room_attempts=16, min_size=4, max_size=8):
         rooms=[]
         for _ in range(room_attempts):
@@ -1220,7 +1273,6 @@ class Floor:
         return (MAP_W//2, MAP_H//2)
 
 # ========================== RENDU & FOG ==========================
-
 def box_sprite(sprite_lines):
     if not sprite_lines:
         return []
@@ -1348,7 +1400,7 @@ def open_treasure_choice(player, depth):
             rows += ["", "Choisissez 1-3, ou 'q' pour ignorer"]
             clear_screen()
             # Si tu as des thèmes d'étage, passe theme=floor.theme ici via l'appelant
-            draw_box('Trésor !', rows, width=max(140, MAP_W))
+            draw_box('Trésor !', rows, width=max(150, MAP_W))
 
             cmd = input('> ').strip().lower()
             if cmd in ('q',''):
@@ -1363,7 +1415,7 @@ def open_treasure_choice(player, depth):
                         # Par sécurité, mais en principe on n'en a pas ici
                         if len(player.consumables) < player.consumables_limit:
                             player.consumables.append(it)
-                            draw_box('Trésor', [f"Vous prenez: {item_summary(it)} (consommable)"], width=84)
+                            draw_box('Trésor', [f"Vous prenez: {item_summary(it)} (consommable)"], width=140)
                             pause()
                             return True
                         else:
@@ -1373,7 +1425,7 @@ def open_treasure_choice(player, depth):
                     else:
                         if len(player.inventory) < player.inventory_limit:
                             player.inventory.append(it)
-                            draw_box('Trésor', [f"Vous prenez: {item_summary(it)}"], width=84)
+                            draw_box('Trésor', [f"Vous prenez: {item_summary(it)}"], width=140)
                             pause()
                             return True
                         else:
@@ -1388,7 +1440,6 @@ def open_treasure_choice(player, depth):
         return False
 
 # ========================== MARCHAND (double panneau) ==========================
-
 def shop_stock_for_depth(depth):
     stock=[random_consumable() for _ in range(3)]
     for _ in range(3+depth//2): stock.append(random_item(depth, DummyPlayer()))
@@ -1500,7 +1551,6 @@ def open_shop(player, depth):
         print('Commande inconnue.'); time.sleep(0.6)
 
 # ========================== ENTRÉE UTILISATEUR ==========================
-
 def parse_move(cmd, last_dir):
     if cmd=='.' and last_dir!=(0,0): return 1, last_dir
     num=''; i=0
@@ -1511,7 +1561,6 @@ def parse_move(cmd, last_dir):
     return None, (0,0)
 
 # ========================== TITRE ==========================
-
 def title_menu():
     art = [
         r"  $$$$$$$\   $$$$$$\   $$$$$$\  $$\      $$\ $$$$$$\ $$\   $$\  $$$$$$\  $$\       ",
@@ -1535,7 +1584,6 @@ def title_menu():
     clear_screen(); draw_box('ROGMINAL — Menu', lines, width=100); pause("Appuyez sur Entrée pour jouer...")
 
 # ========================== ÉVÉNEMENTS ==========================
-
 def maybe_trigger_event(player, depth):
     # Petits événements qui rythment l'exploration
     roll = random.random()
@@ -1560,7 +1608,6 @@ def maybe_trigger_event(player, depth):
     return None
 
 # ========================== BOUCLE PRINCIPALE ==========================
-
 def game_loop():
     enable_windows_ansi()
     if '--test' in sys.argv:
@@ -1701,8 +1748,7 @@ def game_loop():
                     break
             continue
 
-# ========================== TESTS ==========================
-
+# ========================== MAIN ==========================
 def _bfs_path_exists(grid, start, goal):
     H,W=len(grid),len(grid[0])
     q=deque([start]); seen={start}
