@@ -36,7 +36,7 @@ def _getch_blocking():
 def read_command(repeat_last_dir):
     """
     Retourne toujours un 2-tuple :
-      ('move', (n, (dx,dy)))  ou  ('action', 'e'|'b'|'i'|'j'|'c'|'x'|None)
+      ('move', (n, (dx,dy)))  ou  ('action', 'e'|'i'|'j'|'c'|'x'|None)
     """
     digits = ''
     while True:
@@ -61,7 +61,7 @@ def read_command(repeat_last_dir):
             n = int(digits) if digits else 1
             return ('move', (n, DIR_KEYS[ch]))
 
-        if ch in ('e','b','i','j','c','x'):
+        if ch in ('e','i','j','c','x'):
             return ('action', ch)
 
         # (optionnel) support flèches sous Windows
@@ -263,7 +263,13 @@ FLOOR, WALL = '·', '#'
 PLAYER_ICON, NPC_ICON, MON_ICON, ITEM_ICON, SHOP_ICON = '@','N','M','*','$'
 STAIR_DOWN, STAIR_UP = '>', '<'
 TREASURE_ICON = 'T'
+TREASURE_BOSS_ICON = 'T'
 ELITE_ICON = 'Ω'
+CASINO_ICON = 'C'
+ALTAR_ICON = '+'
+LOCKED_DOOR_ICON = 'D'
+HUD_CONTROLS = '[ZQSD/WASD] déplacer • E interagir • I inventaire • C stats • J journal • X quitter'
+MENU_CONTROLS = "Commandes : ZQSD/WASD se déplacer • E interagir (PNJ/boutique/autel/casino) • I inventaire • C stats • J journal • X quitter"
 
 # ========================== BALANCE ==========================
 BALANCE = {
@@ -277,6 +283,12 @@ BALANCE = {
 
     # CARTE
     'map_items_per_floor': 3,   # au lieu de 6
+    'locked_rooms_per_floor': 1,
+    'boss_locked_room_chance': 0.18,
+    'normal_key_drop_chance': 0.06,
+    'normal_key_shop_price': 70,
+    'altar_spawn_chance': 0.14,
+    'altar_on_boss_floor_chance': 0.68,
 
     # PNJ par étage (peut être 0)
     'npcs_min': 0,
@@ -286,15 +298,15 @@ BALANCE = {
     'level_xp_threshold': 40,   # au lieu de 30 (plus lent)
     'level_hp_gain': 3,         # au lieu de 6
     'level_atk_gain': 1,        # au lieu de 2
-    'level_def_gain': 0,        # au lieu de 1
+    'level_def_gain': 0.5,        # au lieu de 1
 
     # QUÊTES (récompenses)
     'quest_xp_mult':   0.70,
     'quest_gold_mult': 0.70,
 
     # Scaling par NIVEAU du joueur et par PROFONDEUR (étage)
-    'mon_per_level':  {'hp': 0.12, 'atk': 0.08, 'def': 0.06},   # +12% PV, +8% ATK, +6% DEF / niveau
-    'mon_per_depth':  {'hp': 0.18, 'atk': 0.12, 'def': 0.08},   # +18% PV, +12% ATK, +8% DEF / étage
+    'mon_per_level':  {'hp': 0.12, 'atk': 0.10, 'def': 0.06},   # +12% PV, +10% ATK, +6% DEF / niveau
+    'mon_per_depth':  {'hp': 0.18, 'atk': 0.15, 'def': 0.08},   # +18% PV, +15% ATK, +8% DEF / étage
 
     # Soft cap : au-delà d’un certain niveau, la progression ennemie ralentit
     'mon_softcap_level': 8,
@@ -302,19 +314,30 @@ BALANCE = {
 
     # Bonus des élites (en plus du scaling de base)
     'elite_bonus': {'hp': 0.40, 'atk': 0.25, 'def': 0.20},
+    # Ajustements boss (légère baisse globale)
+    'boss_stat_mult': {'hp': 0.90, 'atk': 0.92, 'def': 0.92},
+    # Nerf léger des premiers boss (s'atténue avec la profondeur)
+    'early_boss_nerf_until_depth': 10,
+    'early_boss_nerf': {'hp': 0.18, 'atk': 0.14, 'def': 0.12},
+    # Diable/dragon hors boss: plus rares
+    'nonboss_diable_dragon_chance': 0.04,
 
     # Garde-fous de jouabilité (post-ajustement)
     'mon_max_atk_vs_player_hp': 0.45,  # ATK monstre ≤ 45% des PV max du joueur
     'mon_max_def_vs_player_atk': 0.85, # DEF monstre ≤ 85% de l’ATK du joueur (sinon combats trop longs)
 
-    # Soin de 50% des PV max à chaque montée de niveau
-    'level_heal_ratio': 0.50,
+    # Soin de 40% des PV max à chaque montée de niveau
+    'level_heal_ratio': 0.40,
     
     # Régénération de PV par tour
     'regen_cap_flat': 5,      # plafond dur par tour (ex: 5 PV)
     'regen_cap_frac': 0.05,   # plafond % PV max par tour (ex: 5%)
     'regen_on_hit_mult': 0.5, # si on a pris des dégâts ce tour : regen × 0.5
     'regen_every_n_turns': 1, # 1 = chaque tour, 2 = un tour sur deux, etc.
+
+    # Casino
+    'casino_gamble_cost_base': 35,
+    'casino_upgrade_cost_base': 65,
 }
 
 # Déplacements: ZQSD/WASD seulement
@@ -358,7 +381,7 @@ SPRITES = {
     ],
     'bat':   [
         "    =/\                 /\=",
-        "     / \'._   (\_/)   _.'/ \\",
+        "    /  \'._  (\_/)   _.'/ \\",
         "   / .''._'--(o.o)--'_.''. \\",
         "  /.' _/ |`'=/   \\='`| \\_ `.\\",
         " /` .' `\;-,'\___/',-;/` '. '\\",
@@ -392,13 +415,13 @@ SPRITES = {
         "    \>| \  /  ,    .    .  |           ",
     ],
     'dragon':[
-        " <>=======()"
-        "(/\___   /|\\          ()==========<>_",
-        "      \_/ | \\        //|\   ______/ \)",
-        "        \_|  \\      // | \_/",
+        " <>=======()",
+        "(/\___   /|\          ()==========<>_",
+        "      \_/ | \        //|\   ______/ \)",
+        "        \_|  \       // | \_/",
         "          \|\/|\_   //  /\/",
         "           (oo)\ \_//  /",
-        "          //_/\_\/ /  |",
+        "          / _/\_\/ /  |",
         "         @@/  |=\  \  |",
         "              \_=\_ \ |",
         "                \==\ \|\_",
@@ -585,6 +608,11 @@ def hp_gauge_text(cur, mx):
     else:               col = Ansi.BRIGHT_RED
     return c(f"{cur}/{mx} PV", col)
 
+def _fmt_num(v):
+    if isinstance(v, float):
+        return str(int(v)) if v.is_integer() else f"{v:.2f}"
+    return str(v)
+
 # ========================== PERSONNAGES & MONSTRES ==========================
 class Character:
     def __init__(self,name,hp,atk,defense,crit=0.05):
@@ -608,6 +636,15 @@ class Player(Character):
         self.temp_buffs={'atk':0,'turns':0}
         self.last_move=(0,0)
         self.quests_active=[]; self.quests_done=[]
+        # Boutique: 1 accès gratuit par étage + 1 accès bonus possible (payant)
+        self.shop_access_count={}
+        self.blessings_count = 0
+        self.curses_count = 0
+        self.normal_keys = 1
+        self.boss_keys = 0
+        self.altar_history = []
+        self.casino_last_upgrade_level = 0
+        self.passive_specials = {}
     def equip(self,item):
         slot=item.slot; old=self.equipment.get(slot)
         if old: self._apply_modifiers(old,remove=True); self.inventory.append(old)
@@ -621,6 +658,8 @@ class Player(Character):
         self.crit=max(0.0,min(0.9,self.crit+sign*item.crit_bonus))
     def all_specials(self):
         specs={}
+        for k,v in self.passive_specials.items():
+            specs[k] = specs.get(k, 0) + v if isinstance(v, (int, float)) else v
         for it in self.equipment.values():
             if it and it.special:
                 for k,v in it.special.items():
@@ -629,7 +668,6 @@ class Player(Character):
         return specs
     
     def stats_summary(self):
-        eq = {k: (v.name if v else '—') for k,v in self.equipment.items()}
         parts = [
             f"Niv:{self.level}",
             f"{color_label('HP')}:{hp_gauge_text(self.hp, self.max_hp)}",
@@ -638,6 +676,9 @@ class Player(Character):
             f"{color_label('CRIT')}:{color_val('CRIT', f'{self.crit:.2f}')}",
             f"{color_label('OR')}:{color_val('OR', self.gold)}",
             f"{color_label('XP')}:{color_val('XP', f'{self.xp}/30')}",
+            f"Clés N/B:{self.normal_keys}/{self.boss_keys}",
+            f"Bénédictions:{self.blessings_count}",
+            f"Malédictions:{self.curses_count}",
         ]
         line1 = "  ".join(parts)
         return line1
@@ -771,6 +812,28 @@ def random_item(depth, player):
 
     return random.choice(pool)
 
+def random_boss_item(depth, player):
+    # Coffres de boss: uniquement Rare -> Légendaire.
+    target_rarities = ['Rare', 'Épique', 'Légendaire']
+    lucky = max(0, depth)
+    weights = {
+        'Rare': max(15, 60 - lucky * 2),
+        'Épique': 28 + lucky * 2,
+        'Légendaire': 8 + lucky,
+    }
+
+    roll_pool = []
+    for rar in target_rarities:
+        roll_pool.extend([rar] * max(1, weights[rar]))
+    picked_rarity = random.choice(roll_pool) if roll_pool else 'Rare'
+
+    pool = [it for it in ALL_ITEMS if isinstance(it, Item) and getattr(it, 'rarity', None) == picked_rarity]
+    if not pool:
+        pool = [it for it in ALL_ITEMS if isinstance(it, Item) and getattr(it, 'rarity', None) in target_rarities]
+    if not pool:
+        return random_item(depth, player)
+    return random.choice(pool)
+
 def random_consumable(): return random.choice(CONSUMABLE_POOL)
 
 def price_of(it):
@@ -780,6 +843,281 @@ def price_of(it):
     rar = {'Commun':1.0,'Rare':2.7,'Épique':3.5,'Légendaire':4.5,'Étrange':2.7}.get(it.rarity,1.0)
     spec = 1.0 + (0.3*(len(it.special) if it.special else 0))
     return int(max(8, score*rar*spec))
+
+def choose_floor_destination(current_depth, direction):
+    """
+    direction: +1 pour descendre, -1 pour remonter.
+    Retourne l'étage cible (int) ou None si annulation.
+    """
+    if direction > 0:
+        options = [
+            (current_depth + 1, "Prudent", "danger +, loot +"),
+            (current_depth + 2, "Audacieux", "danger ++, loot ++"),
+            (current_depth + 3, "Suicidaire", "danger +++, loot +++"),
+        ]
+        title = "Descente ciblée"
+    else:
+        options = []
+        if current_depth - 1 >= 0:
+            options.append((current_depth - 1, "Retour", "plus sûr, moins de loot"))
+        if current_depth - 2 >= 0:
+            options.append((current_depth - 2, "Retraite rapide", "beaucoup plus sûr"))
+        title = "Remontée ciblée"
+
+    if not options:
+        return None
+
+    lines = ["Choisissez votre destination :"]
+    for i, opt in enumerate(options, 1):
+        depth = opt[0]
+        risk = opt[1] if len(opt) > 1 else "Inconnu"
+        desc = opt[2] if len(opt) > 2 else "—"
+        lines.append(f" {i}) Étage {depth} — {risk} ({desc})")
+    lines.append(" q) Annuler")
+    draw_box(title, lines, width=86)
+
+    while True:
+        cmd = input("> ").strip().lower()
+        if cmd in ("q", "x", ""):
+            return None
+        if cmd.isdigit():
+            idx = int(cmd) - 1
+            if 0 <= idx < len(options):
+                return options[idx][0]
+        print("Choix invalide.")
+
+def _upgrade_item_name(name):
+    m = re.search(r" \+(\d+)$", name)
+    if m:
+        lvl = int(m.group(1)) + 1
+        return re.sub(r" \+\d+$", f" +{lvl}", name)
+    return f"{name} +1"
+
+def upgrade_item(it):
+    if isinstance(it, Consumable):
+        return it
+    special = None
+    if it.special:
+        special = {}
+        for k, v in it.special.items():
+            if isinstance(v, int):
+                special[k] = v + 1
+            elif isinstance(v, float):
+                special[k] = round(v + 0.01, 2)
+            else:
+                special[k] = v
+    return it._replace(
+        name=_upgrade_item_name(it.name),
+        hp_bonus=it.hp_bonus + max(1, int(round(max(1, it.hp_bonus) * 0.20))),
+        atk_bonus=it.atk_bonus + max(1, int(round(max(1, it.atk_bonus) * 0.20))),
+        def_bonus=it.def_bonus + max(1, int(round(max(1, it.def_bonus) * 0.20))),
+        crit_bonus=min(0.25, round(it.crit_bonus + 0.01, 2)),
+        special=special,
+    )
+
+def open_casino(player, depth):
+    gamble_cost = BALANCE['casino_gamble_cost_base'] + depth * 2
+    upgrade_cost = BALANCE['casino_upgrade_cost_base'] + player.level * 5
+    while True:
+        rows = [
+            f"Or disponible : {player.gold}",
+            "",
+            f"1) Miser {gamble_cost} or pour un item aléatoire",
+            f"2) Upgrader un objet équipé ({upgrade_cost} or, 1 fois tous les 5 niveaux)",
+            "q) Quitter",
+        ]
+        draw_box("Casino clandestin", rows, width=90)
+        cmd = input("> ").strip().lower()
+        if cmd == "q":
+            return
+        if cmd == "1":
+            if player.gold < gamble_cost:
+                print("Pas assez d'or."); time.sleep(0.7); continue
+            if len(player.inventory) >= player.inventory_limit:
+                print("Inventaire plein."); time.sleep(0.7); continue
+            player.gold -= gamble_cost
+            roll = random.random()
+            loot_depth = depth + (2 if roll < 0.12 else (1 if roll < 0.45 else 0))
+            it = random_item(max(0, loot_depth), player)
+            player.inventory.append(it)
+            draw_box("Casino", [f"Vous gagnez: {item_summary(it)}"], width=130)
+            pause()
+            continue
+        if cmd == "2":
+            if player.level < 5 or player.level % 5 != 0:
+                print("Upgrade dispo uniquement aux niveaux multiples de 5."); time.sleep(0.8); continue
+            if player.casino_last_upgrade_level >= player.level:
+                print("Vous avez déjà utilisé l'upgrade pour ce palier."); time.sleep(0.8); continue
+            if player.gold < upgrade_cost:
+                print("Pas assez d'or."); time.sleep(0.7); continue
+            equipped = [(slot, it) for slot, it in player.equipment.items() if it]
+            if not equipped:
+                print("Aucun objet équipé à upgrader."); time.sleep(0.7); continue
+            draw_box("Upgrade casino", [f"{i+1}) {slot}: {item_summary(it)}" for i, (slot, it) in enumerate(equipped)] + ["q) Annuler"], width=140)
+            pick = input("> ").strip().lower()
+            if pick == "q":
+                continue
+            if not pick.isdigit() or not (1 <= int(pick) <= len(equipped)):
+                print("Choix invalide."); time.sleep(0.6); continue
+            idx = int(pick) - 1
+            slot, old = equipped[idx]
+            player.gold -= upgrade_cost
+            player._apply_modifiers(old, remove=True)
+            new_item = upgrade_item(old)
+            player.equipment[slot] = new_item
+            player._apply_modifiers(new_item, remove=False)
+            player.casino_last_upgrade_level = player.level
+            draw_box("Upgrade réussi", [f"{old.name} -> {new_item.name}"], width=90)
+            pause()
+            continue
+        print("Commande inconnue."); time.sleep(0.6)
+
+def open_altar(player, depth):
+    rows = [
+        "L'autel pulse d'une énergie instable.",
+        "1) Bénédiction (bonus sûrs, en % sur vos stats)",
+        "2) Malédiction (gros bonus + contre-coup en %)",
+        "q) Ignorer",
+    ]
+    draw_box("Sanctuaire ancien", rows, width=88)
+    cmd = input("> ").strip().lower()
+
+    def _gain_int_pct(attr, pct, min_gain=1, floor_value=0):
+        base = max(floor_value, int(round(getattr(player, attr))))
+        delta = max(min_gain, int(round(base * pct)))
+        setattr(player, attr, base + delta)
+        return delta, base
+
+    def _lose_int_pct(attr, pct, min_loss=1, floor_value=0):
+        base = max(floor_value, int(round(getattr(player, attr))))
+        delta = max(min_loss, int(round(base * pct)))
+        new_val = max(floor_value, base - delta)
+        real_loss = base - new_val
+        setattr(player, attr, new_val)
+        return real_loss, base
+
+    def _gain_crit_pct(pct, min_gain=0.01):
+        base = max(0.0, player.crit)
+        delta = max(min_gain, base * pct)
+        new_crit = min(0.9, round(base + delta, 3))
+        real_gain = round(new_crit - base, 3)
+        player.crit = new_crit
+        return real_gain, base
+
+    def _lose_crit_pct(pct, min_loss=0.01):
+        base = max(0.0, player.crit)
+        delta = max(min_loss, base * pct)
+        new_crit = max(0.0, round(base - delta, 3))
+        real_loss = round(base - new_crit, 3)
+        player.crit = new_crit
+        return real_loss, base
+
+    if cmd == "1":
+        blessing = random.choice([
+            "vitalite", "puissance", "rempart", "precision",
+            "clairvoyance", "vigueur", "duelliste", "prosperite"
+        ])
+        if blessing == "vitalite":
+            hp_gain, hp_base = _gain_int_pct("max_hp", 0.10, min_gain=3, floor_value=8)
+            player.hp = min(player.max_hp, player.hp + hp_gain)
+            msg = f"+{hp_gain} PV max (+10% de {hp_base})"
+        elif blessing == "puissance":
+            atk_gain, atk_base = _gain_int_pct("atk", 0.12, min_gain=1, floor_value=1)
+            msg = f"+{atk_gain} ATK (+12% de {atk_base})"
+        elif blessing == "rempart":
+            def_gain, def_base = _gain_int_pct("defense", 0.12, min_gain=1, floor_value=0)
+            msg = f"+{def_gain} DEF (+12% de {def_base})"
+        elif blessing == "precision":
+            crit_gain, crit_base = _gain_crit_pct(0.35, min_gain=0.01)
+            msg = f"+{crit_gain:.2f} CRIT (+35% de {crit_base:.2f})"
+        elif blessing == "clairvoyance":
+            fov_gain = 1 if random.random() < 0.75 else 2
+            player.passive_specials['fov_bonus'] = player.passive_specials.get('fov_bonus', 0) + fov_gain
+            msg = f"+{fov_gain} vision permanente"
+        elif blessing == "vigueur":
+            hp_gain, hp_base = _gain_int_pct("max_hp", 0.08, min_gain=2, floor_value=8)
+            def_gain, def_base = _gain_int_pct("defense", 0.08, min_gain=1, floor_value=0)
+            player.hp = min(player.max_hp, player.hp + hp_gain)
+            msg = f"+{hp_gain} PV max (+8% de {hp_base}), +{def_gain} DEF (+8% de {def_base})"
+        elif blessing == "duelliste":
+            atk_gain, atk_base = _gain_int_pct("atk", 0.08, min_gain=1, floor_value=1)
+            crit_gain, crit_base = _gain_crit_pct(0.22, min_gain=0.01)
+            msg = f"+{atk_gain} ATK (+8% de {atk_base}), +{crit_gain:.2f} CRIT (+22% de {crit_base:.2f})"
+        else:  # prosperite
+            gold_gain = int(35 + depth * 12)
+            player.gold += gold_gain
+            atk_gain, atk_base = _gain_int_pct("atk", 0.06, min_gain=1, floor_value=1)
+            msg = f"+{gold_gain} or, +{atk_gain} ATK (+6% de {atk_base})"
+        player.blessings_count += 1
+        player.altar_history.append(f"Étage {depth} — Bénédiction: {msg}")
+        draw_box("Bénédiction", [msg], width=70)
+        pause()
+        return True
+    if cmd == "2":
+        # Intensité aléatoire: parfois très punitive, parfois "gérable"
+        tier = random.choices(
+            population=["moderee", "forte", "brutale"],
+            weights=[45, 40, 15],
+            k=1,
+        )[0]
+        mult = {"moderee": 0.85, "forte": 1.00, "brutale": 1.25}[tier]
+
+        pact = random.choice(["verre", "acier", "ombre", "avidite", "sang", "ruine"])
+        reward_lines = [f"Pacte {tier}: puissance accrue, prix à payer."]
+
+        if pact == "verre":
+            atk_gain, atk_base = _gain_int_pct("atk", 0.22 * mult, min_gain=2, floor_value=1)
+            hp_loss, hp_base = _lose_int_pct("max_hp", 0.18 * mult, min_loss=4, floor_value=8)
+            player.hp = min(player.hp, player.max_hp)
+            reward_lines += [f"Bonus: +{atk_gain} ATK (+{int(22*mult)}% de {atk_base})", f"Malus: -{hp_loss} PV max (-{int(18*mult)}% de {hp_base})"]
+            altar_log = f"Étage {depth} — Malédiction({tier}) Pacte de verre: +{atk_gain} ATK / -{hp_loss} PV max"
+        elif pact == "acier":
+            def_gain, def_base = _gain_int_pct("defense", 0.24 * mult, min_gain=1, floor_value=0)
+            atk_loss, atk_base = _lose_int_pct("atk", 0.10 * mult, min_loss=1, floor_value=1)
+            crit_loss, crit_base = _lose_crit_pct(0.22 * mult, min_loss=0.01)
+            reward_lines += [f"Bonus: +{def_gain} DEF (+{int(24*mult)}% de {def_base})", f"Malus: -{atk_loss} ATK (-{int(10*mult)}% de {atk_base}), -{crit_loss:.2f} CRIT"]
+            altar_log = f"Étage {depth} — Malédiction({tier}) Pacte d'acier: +{def_gain} DEF / -{atk_loss} ATK -{crit_loss:.2f} CRIT"
+        elif pact == "ombre":
+            crit_gain, crit_base = _gain_crit_pct(0.55 * mult, min_gain=0.01)
+            fov_gain = max(1, int(round(1 * mult)))
+            def_loss, def_base = _lose_int_pct("defense", 0.16 * mult, min_loss=1, floor_value=0)
+            hp_loss, hp_base = _lose_int_pct("max_hp", 0.12 * mult, min_loss=3, floor_value=8)
+            player.passive_specials['fov_bonus'] = player.passive_specials.get('fov_bonus', 0) + fov_gain
+            player.hp = min(player.hp, player.max_hp)
+            reward_lines += [f"Bonus: +{crit_gain:.2f} CRIT (+{int(55*mult)}% de {crit_base:.2f}), +{fov_gain} vision", f"Malus: -{def_loss} DEF (-{int(16*mult)}% de {def_base}), -{hp_loss} PV max"]
+            altar_log = f"Étage {depth} — Malédiction({tier}) Pacte d'ombre: +{crit_gain:.2f} CRIT +{fov_gain} vision / -{def_loss} DEF -{hp_loss} PV max"
+        elif pact == "avidite":
+            gold_gain = int((120 + depth * 18) * mult)
+            atk_gain, atk_base = _gain_int_pct("atk", 0.10 * mult, min_gain=1, floor_value=1)
+            unlucky_gain = max(1, int(round(1 * mult)))
+            def_loss, def_base = _lose_int_pct("defense", 0.12 * mult, min_loss=1, floor_value=0)
+            player.gold += gold_gain
+            player.passive_specials['unlucky'] = player.passive_specials.get('unlucky', 0) + unlucky_gain
+            reward_lines += [f"Bonus: +{gold_gain} or, +{atk_gain} ATK (+{int(10*mult)}% de {atk_base})", f"Malus: malchance +{unlucky_gain}, -{def_loss} DEF (-{int(12*mult)}% de {def_base})"]
+            altar_log = f"Étage {depth} — Malédiction({tier}) Pacte d'avidité: +{gold_gain} or +{atk_gain} ATK / malchance +{unlucky_gain} -{def_loss} DEF"
+        elif pact == "sang":
+            hp_gain, hp_base = _gain_int_pct("max_hp", 0.14 * mult, min_gain=4, floor_value=8)
+            player.hp = min(player.max_hp, player.hp + hp_gain)
+            lifesteal_gain = round(0.03 * mult, 2)
+            player.passive_specials['lifesteal'] = round(player.passive_specials.get('lifesteal', 0.0) + lifesteal_gain, 2)
+            def_loss, def_base = _lose_int_pct("defense", 0.15 * mult, min_loss=1, floor_value=0)
+            crit_loss, _ = _lose_crit_pct(0.18 * mult, min_loss=0.01)
+            reward_lines += [f"Bonus: +{hp_gain} PV max (+{int(14*mult)}% de {hp_base}), vol de vie +{lifesteal_gain:.2f}", f"Malus: -{def_loss} DEF (-{int(15*mult)}% de {def_base}), -{crit_loss:.2f} CRIT"]
+            altar_log = f"Étage {depth} — Malédiction({tier}) Pacte de sang: +{hp_gain} PV max, vol de vie +{lifesteal_gain:.2f} / -{def_loss} DEF -{crit_loss:.2f} CRIT"
+        else:  # ruine
+            atk_gain, atk_base = _gain_int_pct("atk", 0.18 * mult, min_gain=2, floor_value=1)
+            def_gain, def_base = _gain_int_pct("defense", 0.18 * mult, min_gain=1, floor_value=0)
+            hp_loss, hp_base = _lose_int_pct("max_hp", 0.20 * mult, min_loss=5, floor_value=8)
+            player.hp = min(player.hp, player.max_hp)
+            reward_lines += [f"Bonus: +{atk_gain} ATK (+{int(18*mult)}% de {atk_base}), +{def_gain} DEF (+{int(18*mult)}% de {def_base})", f"Malus: -{hp_loss} PV max (-{int(20*mult)}% de {hp_base})"]
+            altar_log = f"Étage {depth} — Malédiction({tier}) Pacte de ruine: +{atk_gain} ATK +{def_gain} DEF / -{hp_loss} PV max"
+
+        player.curses_count += 1
+        player.altar_history.append(altar_log)
+        draw_box("Pacte sombre", reward_lines, width=140)
+        pause()
+        return True
+    return False
 
 # ========================== INVENTAIRE ==========================
 def effect_str(special):
@@ -792,13 +1130,73 @@ def item_summary(it):
     if it is None: return '—'
     if isinstance(it, Consumable):
         return f"{it.name} [{it.rarity}] — {it.description}"
+    slot_label = {'weapon': 'Arme', 'armor': 'Armure', 'accessory': 'Accessoire'}.get(it.slot, it.slot)
     # stats colorées
     s_hp   = f"{color_label('HP')}+{color_val('HP', it.hp_bonus)}"
     s_atk  = f"{color_label('ATK')}+{color_val('ATK', it.atk_bonus)}"
     s_def  = f"{color_label('DEF')}+{color_val('DEF', it.def_bonus)}"
     s_crit = f"{color_label('CRIT')}+{color_val('CRIT', f'{it.crit_bonus:.2f}')}"
-    return (f"{it.name} [{it.rarity}] — {it.description} | "
+    return (f"{it.name} [{slot_label}] [{it.rarity}] — {it.description} | "
             f"{s_hp} {s_atk} {s_def} {s_crit}" + effect_str(it.special))
+
+def open_stats_interface(player):
+    eq_items = [it for it in player.equipment.values() if it]
+    eq_hp = sum(it.hp_bonus for it in eq_items)
+    eq_atk = sum(it.atk_bonus for it in eq_items)
+    eq_def = sum(it.def_bonus for it in eq_items)
+    eq_crit = sum(it.crit_bonus for it in eq_items)
+
+    core_rows = [
+        c("Stats actuelles", Ansi.BRIGHT_WHITE),
+        f"HP: {player.hp}/{_fmt_num(player.max_hp)}",
+        f"ATK: {_fmt_num(player.atk)} (+temp {_fmt_num(player.temp_buffs['atk'])})",
+        f"DEF: {_fmt_num(player.defense)}",
+        f"CRIT: {_fmt_num(player.crit)}",
+        f"OR: {_fmt_num(player.gold)}",
+        "",
+        c("Répartition (total = hors équipement + équipement)", Ansi.BRIGHT_CYAN),
+        f"HP max: {_fmt_num(player.max_hp)} = {_fmt_num(player.max_hp - eq_hp)} + {_fmt_num(eq_hp)}",
+        f"ATK: {_fmt_num(player.atk)} = {_fmt_num(player.atk - eq_atk)} + {_fmt_num(eq_atk)}",
+        f"DEF: {_fmt_num(player.defense)} = {_fmt_num(player.defense - eq_def)} + {_fmt_num(eq_def)}",
+        f"CRIT: {_fmt_num(player.crit)} = {_fmt_num(player.crit - eq_crit)} + {_fmt_num(eq_crit)}",
+    ]
+
+    equip_rows = [c("Sources équipement", Ansi.BRIGHT_MAGENTA)]
+    if not eq_items:
+        equip_rows.append(c("(Aucun objet équipé)", Ansi.BRIGHT_BLACK))
+    else:
+        for slot, it in player.equipment.items():
+            if not it:
+                continue
+            slot_name = {"weapon":"Arme","armor":"Armure","accessory":"Accessoire"}.get(slot, slot)
+            bonus = f"HP+{_fmt_num(it.hp_bonus)} ATK+{_fmt_num(it.atk_bonus)} DEF+{_fmt_num(it.def_bonus)} CRIT+{_fmt_num(it.crit_bonus)}"
+            line = f"- {slot_name}: {it.name} [{it.rarity}] | {bonus}"
+            equip_rows.append(c(line, rarity_color(it.rarity)))
+            if it.special:
+                equip_rows.append(f"  Effets: {effect_str(it.special).replace(' | Effets: ','')}")
+
+    altar_rows = [c("Historique des autels", Ansi.BRIGHT_YELLOW)]
+    if not player.altar_history:
+        altar_rows.append(c("(Aucun effet d'autel appliqué)", Ansi.BRIGHT_BLACK))
+    else:
+        for i, entry in enumerate(player.altar_history, 1):
+            altar_rows.append(f"{i:>2}) {entry}")
+
+    spec_rows = [c("Effets passifs cumulés", Ansi.BRIGHT_GREEN)]
+    specs = player.all_specials()
+    if not specs:
+        spec_rows.append(c("(Aucun effet spécial actif)", Ansi.BRIGHT_BLACK))
+    else:
+        for k in sorted(specs.keys()):
+            spec_rows.append(f"- {k}: {_fmt_num(specs[k])}")
+
+    clear_screen()
+    draw_box("Stats — Vue détaillée", core_rows, width=max(150, MAP_W + 50))
+    print()
+    draw_box("Stats — Équipement", equip_rows, width=max(150, MAP_W + 50))
+    print()
+    draw_box("Stats — Autels & Effets", altar_rows + [""] + spec_rows, width=max(150, MAP_W + 50))
+    pause()
 
 def preview_delta(player, it):
     if isinstance(it, Consumable): return '(consommable)'
@@ -819,7 +1217,7 @@ def open_inventory(player):
     - Sac Objets (équipables/vendables) — actions : e<num>, d<num>, s<num>
     - Sac Consommables (non vendables) — actions : uc<num>, dc<num>
     """
-    BOX_W = max(120, MAP_W + 30)
+    BOX_W = max(138, MAP_W + 42)
 
     while True:
         # === PANNEAU 1 : Fiche & Équipement ===
@@ -974,9 +1372,44 @@ def compute_damage(attacker, defender, attacker_specs=None):
         dmg = max(1, int(dmg * 1.8))
     return dmg
 
-def fight(player, depth):
-    mdef = random.choice(MONSTER_DEFS).copy()
-    mdef = scale_monster(mdef, player, depth, elite=False)
+def _try_grant_normal_key(player, depth, bonus_chance=0.0):
+    key_chance = BALANCE.get('normal_key_drop_chance', 0.05) + bonus_chance + min(0.03, depth * 0.002)
+    if random.random() < key_chance:
+        player.normal_keys += 1
+        print(c("Vous récupérez une clé normale.", Ansi.BRIGHT_YELLOW))
+
+def fight(player, depth, boss=False):
+    if boss:
+        pool = [m for m in MONSTER_DEFS if m['id'] in ('diable', 'dragon')]
+        mdef = random.choice(pool).copy()
+    else:
+        heavy_pool = [m for m in MONSTER_DEFS if m['id'] in ('diable', 'dragon')]
+        normal_pool = [m for m in MONSTER_DEFS if m['id'] not in ('diable', 'dragon')]
+        heavy_chance = BALANCE.get('nonboss_diable_dragon_chance', 0.04)
+        # Pas de diable/dragon trop tôt, puis faible chance ensuite.
+        if depth < 4:
+            heavy_chance = 0.0
+        if heavy_pool and random.random() < heavy_chance:
+            mdef = random.choice(heavy_pool).copy()
+        else:
+            mdef = random.choice(normal_pool).copy()
+    mdef = scale_monster(mdef, player, depth, elite=boss)
+    if boss:
+        boss_mult = BALANCE.get('boss_stat_mult', {})
+        mdef['hp'] = max(1, int(round(mdef['hp'] * boss_mult.get('hp', 1.0))))
+        mdef['atk'] = max(1, int(round(mdef['atk'] * boss_mult.get('atk', 1.0))))
+        mdef['def'] = max(0, int(round(mdef['def'] * boss_mult.get('def', 1.0))))
+        until_depth = BALANCE.get('early_boss_nerf_until_depth', 0)
+        if depth <= until_depth:
+            # Ex: à l'étage 5, on applique environ la moitié du nerf max.
+            fade = max(0.0, 1.0 - (depth / max(1, until_depth)))
+            nerf = BALANCE.get('early_boss_nerf', {})
+            mdef['hp'] = max(1, int(round(mdef['hp'] * (1.0 - nerf.get('hp', 0.0) * fade))))
+            mdef['atk'] = max(1, int(round(mdef['atk'] * (1.0 - nerf.get('atk', 0.0) * fade))))
+            mdef['def'] = max(0, int(round(mdef['def'] * (1.0 - nerf.get('def', 0.0) * fade))))
+        mdef['name'] = f"Boss {mdef['name']}"
+        mdef['xp'] = int(mdef['xp'] * 1.35)
+        mdef['gold'] = int(mdef['gold'] * 1.40)
     monster = Character(mdef['name'], mdef['hp'], mdef['atk'], mdef['def'], mdef['crit'])
     monster.max_hp = mdef['hp']
     sprite_m = mdef['sprite']
@@ -1023,6 +1456,7 @@ def fight(player, depth):
                                 player.temp_buffs['atk'] += cns.power
                                 player.temp_buffs['turns'] = 3
                             elif cns.effect == 'flee':
+                                cons.pop(i)
                                 print("Vous utilisez une pierre de rappel : fuite réussie !")
                                 return 'fled'
                             cons.pop(i)
@@ -1114,6 +1548,13 @@ def fight(player, depth):
                 if len(player.consumables) < player.consumables_limit:
                     player.consumables.append(cons)
 
+            if boss:
+                player.boss_keys += 1
+                print(c("Clé de coffre de boss obtenue.", Ansi.BRIGHT_MAGENTA))
+                _try_grant_normal_key(player, depth, bonus_chance=0.10)
+            else:
+                _try_grant_normal_key(player, depth)
+
             pause()
             return ('win', mdef['id'])
     return 'dead'
@@ -1195,33 +1636,118 @@ class Floor:
         # Monstres & Items
         self.monsters=set()
         for _ in range(8+depth*2): pos=self._random_floor_pos(occ); occ.add(pos); self.monsters.add(pos)
-        self.items=set()
         self.items = set()
         # Items aléatoires, au moins 1 par étage
         for _ in range(BALANCE['map_items_per_floor']):
             pos = self._random_floor_pos(occ); occ.add(pos); self.items.add(pos)
 
-        # Trésors (au moins 1 par étage)
-        self.treasures=set()
+        # Trésors
+        self.treasures = set()
+        self.boss_treasures = set()
+        self.treasure_types = {}
+
+        # Salles verrouillées
+        self.locked_doors = {}
+        for _ in range(BALANCE.get('locked_rooms_per_floor', 1)):
+            self._add_locked_room(occ, chest_type='normal')
+        boss_room = (depth > 0 and depth % 5 == 0) or (random.random() < BALANCE.get('boss_locked_room_chance', 0.0))
+        if boss_room:
+            self._add_locked_room(occ, chest_type='boss')
+
+        # Trésors additionnels (au moins 1 par étage)
         tpos = self._far_floor_pos(self.start, min_dist=10, occupied=occ)
-        if tpos: self.treasures.add(tpos); occ.add(tpos)
+        if tpos:
+            self.treasures.add(tpos)
+            self.treasure_types[tpos] = 'normal'
+            occ.add(tpos)
         if random.random()<0.25:
-            t2 = self._random_floor_pos(occ); self.treasures.add(t2); occ.add(t2)
+            t2 = self._random_floor_pos(occ)
+            self.treasures.add(t2)
+            self.treasure_types[t2] = 'normal'
+            occ.add(t2)
         # Fog & POIs vus
         self.discovered=set(); self.visible=set()
         self.seen_shops=set(); self.seen_npcs=set(); self.seen_stairs=set(); self.seen_treasures=set()
+        self.seen_altars=set(); self.seen_casinos=set()
         self.elites = set()
-        self.seen_elites = set()  # pas indispensable si on les affiche tout le temps
-        if random.random() < max(0.10, 0.05 + 0.02*self.depth):  # rare, un peu plus profond = un peu plus fréquent
+        if depth > 0 and depth % 5 == 0:
             epos = self._far_floor_pos(self.start, min_dist=14, occupied=occ)
             if epos:
                 self.elites.add(epos)
                 occ.add(epos)
+
+        # Sanctuaires / Autels
+        self.altars = set()
+        altar_chance = BALANCE['altar_on_boss_floor_chance'] if depth > 0 and depth % 5 == 0 else BALANCE['altar_spawn_chance']
+        if random.random() < altar_chance:
+            apos = self._random_floor_pos(occ)
+            self.altars.add(apos)
+            occ.add(apos)
+
+        # Casino: tous les 5 étages
+        self.casinos = set()
+        if depth > 0 and depth % 5 == 0:
+            cpos = self._far_floor_pos(self.start, min_dist=8, occupied=occ)
+            if cpos:
+                self.casinos.add(cpos)
+                occ.add(cpos)
+
         def _pick_theme(depth):
         # Variante simple : cycler selon la profondeur
             return THEMES[depth % len(THEMES)]
 
         self.theme = _pick_theme(depth)
+
+    def _add_locked_room(self, occupied, chest_type='normal'):
+        # Petite salle 3x3 derrière une porte verrouillée.
+        for _ in range(400):
+            w, h = 3, 3
+            x = random.randint(2, MAP_W - w - 3)
+            y = random.randint(2, MAP_H - h - 3)
+            if any(self.grid[yy][xx] == FLOOR for yy in range(y-1, y+h+1) for xx in range(x-1, x+w+1)):
+                continue
+
+            # Choisir une case murale voisine d'un sol existant qui servira de porte
+            border_candidates = []
+            for xx in range(x, x+w):
+                border_candidates.extend([(xx, y-1), (xx, y+h)])
+            for yy in range(y, y+h):
+                border_candidates.extend([(x-1, yy), (x+w, yy)])
+            random.shuffle(border_candidates)
+
+            door = None
+            for bx, by in border_candidates:
+                if not (1 <= bx < MAP_W-1 and 1 <= by < MAP_H-1):
+                    continue
+                # Adjacent à du sol existant pour que le joueur puisse tenter l'ouverture.
+                around = [(bx+1,by), (bx-1,by), (bx,by+1), (bx,by-1)]
+                if any(self.grid[ay][ax] == FLOOR for ax, ay in around if 0 <= ax < MAP_W and 0 <= ay < MAP_H):
+                    door = (bx, by)
+                    break
+            if not door:
+                continue
+
+            # Creuse la salle (fermée par la porte verrouillée)
+            for yy in range(y, y+h):
+                for xx in range(x, x+w):
+                    self.grid[yy][xx] = FLOOR
+                    occupied.add((xx, yy))
+
+            dx, dy = door
+            self.grid[dy][dx] = WALL
+            self.locked_doors[door] = chest_type
+
+            # Récompense au centre de la salle.
+            prize = (x + w//2, y + h//2)
+            if prize not in occupied:
+                occupied.add(prize)
+            self.treasures = getattr(self, 'treasures', set())
+            self.treasures.add(prize)
+            self.treasure_types[prize] = chest_type
+            if chest_type == 'boss':
+                self.boss_treasures.add(prize)
+            return True
+        return False
 
     def _carve_rooms_and_corridors(self, room_attempts=16, min_size=4, max_size=8):
         rooms=[]
@@ -1294,6 +1820,31 @@ def _visible_cells(floor: Floor, player_pos, radius=8):
 # Alias compat si du code appelle visible_cells()
 visible_cells = _visible_cells
 
+def interaction_hint(floor, player_pos):
+    x, y = player_pos
+    pos = (x, y)
+    if floor.up and pos == floor.up and floor.depth > 0:
+        return "Escalier montant détecté — appuyez sur E."
+    if pos == floor.down:
+        return "Escalier descendant détecté — appuyez sur E."
+    if pos in getattr(floor, 'shops', set()):
+        return "Marchand présent — appuyez sur E."
+    if pos in getattr(floor, 'casinos', set()):
+        return "Casino présent — appuyez sur E."
+    if pos in getattr(floor, 'altars', set()):
+        return "Sanctuaire présent — appuyez sur E."
+    if pos in getattr(floor, 'npcs', {}):
+        return "PNJ présent — appuyez sur E."
+    # Hint contextuel pour les portes verrouillées adjacentes.
+    for dx, dy in ((1,0), (-1,0), (0,1), (0,-1)):
+        door_pos = (x + dx, y + dy)
+        dtype = getattr(floor, 'locked_doors', {}).get(door_pos)
+        if dtype == 'boss':
+            return "Porte de boss à proximité — nécessite une clé de boss."
+        if dtype == 'normal':
+            return "Porte verrouillée à proximité — nécessite une clé normale."
+    return None
+
 def render_map(floor, player_pos, player, fatigue):
     # maj visibilité
     base_radius = 8
@@ -1309,6 +1860,10 @@ def render_map(floor, player_pos, player, fatigue):
         if p in floor.visible: floor.seen_npcs.add(p)
     for p in list(getattr(floor,'treasures',set())):
         if p in floor.visible: floor.seen_treasures.add(p)
+    for p in list(getattr(floor,'altars',set())):
+        if p in floor.visible: floor.seen_altars.add(p)
+    for p in list(getattr(floor,'casinos',set())):
+        if p in floor.visible: floor.seen_casinos.add(p)
     # entête et bordures
     T = floor.theme
     clear_screen()
@@ -1322,6 +1877,13 @@ def render_map(floor, player_pos, player, fatigue):
     spr_colored = colorize_sprite_by_hp(spr, player.hp, player.max_hp)
     spr_boxed   = box_sprite(spr_colored)
     spr_h = len(spr_boxed)
+
+    treasures = getattr(floor, 'treasures', set())
+    boss_treasures = getattr(floor, 'boss_treasures', set())
+    altars = getattr(floor, 'altars', set())
+    casinos = getattr(floor, 'casinos', set())
+    elites = getattr(floor, 'elites', set())
+    locked_doors = getattr(floor, 'locked_doors', {})
 
     for y in range(MAP_H):
         row=''
@@ -1343,10 +1905,19 @@ def render_map(floor, player_pos, player, fatigue):
                 row += c(SHOP_ICON, T['shop'])
             elif (x,y) in floor.npcs and (is_vis or (x,y) in floor.seen_npcs):
                 row += c(NPC_ICON, T['npc'])
-            elif (x,y) in getattr(floor,'treasures',set()) and (is_vis or (x,y) in floor.seen_treasures):
-                row += c(TREASURE_ICON, T['item'])
-            elif (x,y) in getattr(floor,'elites',set()):  # toujours visible
+            elif (x,y) in treasures and (is_vis or (x,y) in floor.seen_treasures):
+                if (x, y) in boss_treasures:
+                    row += c(TREASURE_BOSS_ICON, T['elite'])
+                else:
+                    row += c(TREASURE_ICON, T['item'])
+            elif (x,y) in altars and (is_vis or (x,y) in floor.seen_altars):
+                row += c(ALTAR_ICON, T.get('down', Ansi.BRIGHT_MAGENTA))
+            elif (x,y) in casinos and (is_vis or (x,y) in floor.seen_casinos):
+                row += c(CASINO_ICON, T.get('shop', Ansi.BRIGHT_YELLOW))
+            elif (x,y) in elites:  # boss visible
                 row += c(ELITE_ICON, T['elite'])
+            elif (x,y) in locked_doors and (is_vis or is_disc):
+                row += c(LOCKED_DOOR_ICON, T['shop'])
             elif is_vis:
                 # on NE MONTRE PAS les monstres volontairement pour garder la surprise
                 row += c('·', T['floor']) if ch==FLOOR else c('#', T['wall'])
@@ -1368,45 +1939,72 @@ def render_map(floor, player_pos, player, fatigue):
                 side = '  ' + ' ' * spr_w
         print(c('│', T['border']) + row + c('│', T['border'])+ (side if SHOW_SIDE_SPRITE else ''))
     print(c('└' + '─' * MAP_W + '┘', T['border']))
-    print(c('[ZQSD/WASD] déplacer • E parler/valider • B boutique (sur $) • J journal • I inventaire • X quitter', Ansi.BRIGHT_BLACK))
+    print(c(HUD_CONTROLS, Ansi.BRIGHT_BLACK))
     print(player.stats_summary())
+    hint = interaction_hint(floor, player_pos)
+    if hint:
+        print(c(hint, Ansi.BRIGHT_YELLOW))
 
 # ========================== COFFRE ==========================
-def open_treasure_choice(player, depth):
+def open_treasure_choice(player, depth, chest_type='normal'):
     """
     Coffre : propose 3 objets (jamais de consommables ici pour éviter l'ambiguïté).
     Retourne True si le joueur a pris quelque chose, False sinon.
     N'affiche que des messages, ne touche pas aux trésors de l'étage (la boucle d'explo s'en charge).
     """
     try:
-        # 3 tirages d'objets d'équipement uniquement
+        def loot_label(it):
+            if isinstance(it, Consumable):
+                return item_summary(it)
+            return c(item_summary(it), rarity_color(it.rarity))
+
+        # Les coffres de boss proposent plus d'options et un niveau de loot plus élevé.
+        pick_count = 4 if chest_type == 'boss' else 3
+        depth_bonus = 2 if chest_type == 'boss' else 0
+
+        # Tirages d'objets d'équipement uniquement
         choices = []
-        for _ in range(3):
-            it = random_item(depth, player)
+        for _ in range(pick_count):
+            if chest_type == 'boss':
+                it = random_boss_item(depth + depth_bonus, player)
+            else:
+                it = random_item(depth + depth_bonus, player)
             # si jamais random_item renvoie un consommable (selon ton implémentation), re-roll en item
             if isinstance(it, Consumable):
                 # relance jusqu'à obtenir un "Item" (avec garde-fou)
                 for __ in range(6):
-                    it = random_item(depth, player)
+                    if chest_type == 'boss':
+                        it = random_boss_item(depth + depth_bonus, player)
+                    else:
+                        it = random_item(depth + depth_bonus, player)
                     if not isinstance(it, Consumable):
                         break
             choices.append(it)
 
         # fallback: si malgré tout on a un consommable, on le convertit en item communs
-        choices = [it if not isinstance(it, Consumable) else random.choice(COMMON_ITEMS) for it in choices]
+        if chest_type == 'boss':
+            boss_pool = [it for it in ALL_ITEMS if isinstance(it, Item) and it.rarity in ('Rare', 'Épique', 'Légendaire')]
+            choices = [it if not isinstance(it, Consumable) else random.choice(boss_pool) for it in choices]
+        else:
+            choices = [it if not isinstance(it, Consumable) else random.choice(COMMON_ITEMS) for it in choices]
 
         while True:
-            rows = [f"{i+1}) {item_summary(it)}  {preview_delta(player,it)}" for i,it in enumerate(choices)]
-            rows += ["", "Choisissez 1-3, ou 'q' pour ignorer"]
+            rows = [f"{i+1}) {loot_label(it)}  {preview_delta(player,it)}" for i,it in enumerate(choices)]
+            rows += ["", f"Choisissez 1-{pick_count}, ou 'q' pour ignorer"]
             clear_screen()
             # Si tu as des thèmes d'étage, passe theme=floor.theme ici via l'appelant
-            draw_box('Trésor !', rows, width=max(150, MAP_W))
+            chest_title = 'Coffre de boss !' if chest_type == 'boss' else 'Trésor !'
+            draw_box(chest_title, rows, width=max(172, MAP_W + 24))
 
             cmd = input('> ').strip().lower()
             if cmd in ('q',''):
+                xp_gain = max(1, 2 + depth + (2 if chest_type == 'boss' else 0))
+                player.gain_xp(xp_gain)
+                draw_box('Trésor', [f"Vous laissez le coffre. Sagesse prudente: +{xp_gain} XP."], width=112)
+                time.sleep(0.6)
                 return False
 
-            if cmd in ('1','2','3'):
+            if cmd.isdigit():
                 idx = int(cmd) - 1
                 if 0 <= idx < len(choices):
                     it = choices[idx]
@@ -1415,27 +2013,27 @@ def open_treasure_choice(player, depth):
                         # Par sécurité, mais en principe on n'en a pas ici
                         if len(player.consumables) < player.consumables_limit:
                             player.consumables.append(it)
-                            draw_box('Trésor', [f"Vous prenez: {item_summary(it)} (consommable)"], width=140)
+                            draw_box('Trésor', [f"Vous prenez: {item_summary(it)} (consommable)"], width=164)
                             pause()
                             return True
                         else:
-                            draw_box('Trésor', ["Sac de consommables plein."], width=84)
+                            draw_box('Trésor', ["Sac de consommables plein."], width=112)
                             pause()
                             return False
                     else:
                         if len(player.inventory) < player.inventory_limit:
                             player.inventory.append(it)
-                            draw_box('Trésor', [f"Vous prenez: {item_summary(it)}"], width=140)
+                            draw_box('Trésor', [f"Vous prenez: {loot_label(it)}"], width=164)
                             pause()
                             return True
                         else:
-                            draw_box('Trésor', ["Inventaire plein."], width=84)
+                            draw_box('Trésor', ["Inventaire plein."], width=112)
                             pause()
                             return False
                 # sinon, on reboucle
     except Exception as e:
         # garde-fou: pas de crash jeu si une anomalie survient
-        draw_box('Erreur coffre', [repr(e)], width=84)
+        draw_box('Erreur coffre', [repr(e)], width=112)
         pause()
         return False
 
@@ -1446,8 +2044,10 @@ def shop_stock_for_depth(depth):
     return stock
     
 def open_shop(player, depth):
-    BOX_W  = max(120, MAP_W + 30)
+    BOX_W  = max(156, MAP_W + 48)
     stock = shop_stock_for_depth(depth)
+    normal_key_stock = 1
+    normal_key_price = BALANCE.get('normal_key_shop_price', 70) + depth * 6
 
     while True:
         # ==== SECTION VENDEUR (achats) ====
@@ -1467,7 +2067,9 @@ def open_shop(player, depth):
         seller_rows.append('')
         seller_rows.append(c("Commandes :", Ansi.BRIGHT_WHITE))
         seller_rows.append(" - <num> : acheter l’item du vendeur")
+        seller_rows.append(f" - k : acheter 1 clé normale ({normal_key_price} or) [stock: {normal_key_stock}]")
         seller_rows.append(" - v<num> : vendre VOTRE item (voir encadré du bas)")
+        seller_rows.append(" - va : vendre TOUS vos objets équipables")
         seller_rows.append(" - s<num> : détails de VOTRE item (voir encadré du bas)")
         seller_rows.append(" - q : quitter la boutique")
 
@@ -1495,12 +2097,22 @@ def open_shop(player, depth):
         clear_screen()
         draw_box(f"Vendeur (Étage {depth})", seller_rows, width=BOX_W)
         print()  # petite marge visuelle
-        draw_box("Vos objets (vendre: v<num>  •  détails: s<num>)", player_rows, width=BOX_W)
+        draw_box("Vos objets (vendre: v<num>/va  •  détails: s<num>)", player_rows, width=BOX_W)
 
         # ==== Commandes ====
         cmd = input('> ').strip().lower()
         if cmd == 'q':
             break
+        if cmd == 'k':
+            if normal_key_stock <= 0:
+                print("Le marchand n'a plus de clé pour cet étage."); time.sleep(0.8); continue
+            if player.gold < normal_key_price:
+                print("Or insuffisant."); time.sleep(0.8); continue
+            player.gold -= normal_key_price
+            normal_key_stock -= 1
+            player.normal_keys += 1
+            print("Vous achetez une clé normale."); time.sleep(0.8)
+            continue
         # ACHAT — numéro simple (liste du vendeur)
         if cmd.isdigit():
             idx = int(cmd) - 1
@@ -1528,6 +2140,16 @@ def open_shop(player, depth):
                 print("Numéro invalide."); time.sleep(0.6)
             continue
         # VENTE — v<num> (votre inventaire uniquement)
+        if cmd == 'va':
+            if not player.inventory:
+                print("Aucun objet à vendre."); time.sleep(0.6); continue
+            total = sum(max(5, price_of(it)//2) for it in player.inventory)
+            sold = len(player.inventory)
+            player.inventory.clear()
+            player.gold += total
+            draw_box("Vente groupée", [f"{sold} objets vendus", f"+{total} or"], width=60)
+            time.sleep(0.8)
+            continue
         if cmd.startswith('v') and cmd[1:].isdigit():
             idx = int(cmd[1:]) - 1
             if 0 <= idx < len(player.inventory):
@@ -1550,16 +2172,6 @@ def open_shop(player, depth):
             continue
         print('Commande inconnue.'); time.sleep(0.6)
 
-# ========================== ENTRÉE UTILISATEUR ==========================
-def parse_move(cmd, last_dir):
-    if cmd=='.' and last_dir!=(0,0): return 1, last_dir
-    num=''; i=0
-    while i<len(cmd) and cmd[i].isdigit(): num+=cmd[i]; i+=1
-    n=int(num) if num else 1
-    key = cmd[i:i+1]
-    if key in DIR_KEYS: return n, DIR_KEYS[key]
-    return None, (0,0)
-
 # ========================== TITRE ==========================
 def title_menu():
     art = [
@@ -1578,8 +2190,8 @@ def title_menu():
     lines.extend(art)
     lines.append("")
     lines.append("But : descendre les étages, survivre et devenir surpuissant grâce au loot.")
-    lines.append("Fonctionnalités : quêtes PNJ, marchand, objets rares/étranges, difficulté progressive.")
-    lines.append("Commandes : ZQSD/WASD se déplacer • E parler • B boutique • I inventaire • J journal • X quitter")
+    lines.append("Fonctionnalités : quêtes PNJ, marchand, casino (tous les 5 étages), autels, salles verrouillées à clés.")
+    lines.append(MENU_CONTROLS)
     lines.append("Astuce : entre un nombre + direction (ex: 5d) ou '.' pour répéter le dernier pas.")
     clear_screen(); draw_box('ROGMINAL — Menu', lines, width=100); pause("Appuyez sur Entrée pour jouer...")
 
@@ -1607,11 +2219,44 @@ def maybe_trigger_event(player, depth):
             return 'fight'
     return None
 
+def _normalize_fight_result(result):
+    if isinstance(result, tuple):
+        return result[0], result[1] if len(result) > 1 else None
+    return result, None
+
+def _apply_combat_quest_progress(player, status, kill_id):
+    updated = []
+    for i, q in enumerate(list(player.quests_active)):
+        if q.type == 'slay' and status == 'win' and kill_id == q.target:
+            q = q._replace(progress=min(q.amount, q.progress + 1))
+            updated.append(q)
+            player.quests_active[i] = q
+        elif q.type == 'survive' and status == 'win':
+            q = q._replace(progress=min(q.amount, q.progress + 1))
+            updated.append(q)
+            player.quests_active[i] = q
+    if updated:
+        maybe_autocomplete_quests(player)
+
+def ask_restart_after_death():
+    draw_box("Game Over", [
+        "Votre héros est tombé.",
+        "",
+        "Relancer une nouvelle partie ? (o/n)"
+    ], width=62)
+    while True:
+        cmd = input("> ").strip().lower()
+        if cmd in ("o", "y"):
+            return True
+        if cmd in ("n", "q", "x", ""):
+            return False
+        print("Réponse invalide (o/n).")
+
 # ========================== BOUCLE PRINCIPALE ==========================
 def game_loop():
     enable_windows_ansi()
     if '--test' in sys.argv:
-        run_tests(); return
+        run_tests(); return 'tests_ok'
     title_menu()
     player=Player('Héros')
     floors=[Floor(0)]; cur=0; pos=floors[0].start
@@ -1624,15 +2269,51 @@ def game_loop():
         if kind == 'action':
             act = payload
         if act == 'x':
-            print('Au revoir !'); break
+            print('Au revoir !'); return 'quit'
         if act == 'j':
             journal(player); continue
         if act == 'i':
             open_inventory(player); continue
         if act == 'c':
-            clear_screen(); print(player.stats_summary()); pause(); continue
+            open_stats_interface(player); continue
         if act == 'e':
-            if pos in f.npcs:
+            if f.up and pos == f.up and cur > 0:
+                target = choose_floor_destination(cur, direction=-1)
+                if target is not None:
+                    cur = target
+                    f = floors[cur]
+                    pos = f.down if f.down else f.start
+                    fatigue = 0
+                    draw_box('Étage', [f"Vous remontez à l'étage {cur}."], width=44); time.sleep(0.5)
+            elif pos == f.down:
+                target = choose_floor_destination(cur, direction=1)
+                if target is not None:
+                    while target >= len(floors):
+                        floors.append(Floor(len(floors)))
+                    cur = target
+                    f = floors[cur]
+                    pos = f.up if f.up else f.start
+                    fatigue = 0
+                    draw_box('Étage', [f"Vous descendez à l'étage {cur}."], width=44); time.sleep(0.5)
+            elif pos in f.shops:
+                uses = player.shop_access_count.get(cur, 0)
+                if uses == 0:
+                    open_shop(player, f.depth)
+                    player.shop_access_count[cur] = 1
+                elif uses == 1:
+                    if player.gold < 10:
+                        draw_box('Boutique', ["Accès bonus: 10 or requis.", "Vous n'avez pas assez d'or."], width=72)
+                        pause()
+                    else:
+                        ask = input("Payer 10 or pour réutiliser la boutique une fois ? (o/n) ").strip().lower()
+                        if ask in ('o', 'y'):
+                            player.gold -= 10
+                            open_shop(player, f.depth)
+                            player.shop_access_count[cur] = 2
+                else:
+                    draw_box('Boutique', [f"Boutique de l'étage {cur} épuisée (accès bonus déjà utilisé)."], width=76)
+                    pause()
+            elif pos in f.npcs:
                 npc=f.npcs[pos]; q=npc['quest']
                 clear_screen(); draw_box(f"{npc['name']} (Étage {q.giver_floor})", [
                     (f"Tuer {q.amount} {q.target}(s)." if q.type=='slay' else
@@ -1646,11 +2327,15 @@ def game_loop():
                         player.quests_active.append(q); draw_box('Quête', ['Quête acceptée !'], width=36); pause()
                 else:
                     draw_box('Quête', ['Rien à remettre pour le moment.'], width=40); pause()
+            elif pos in getattr(f, 'casinos', set()):
+                open_casino(player, f.depth)
+            elif pos in getattr(f, 'altars', set()):
+                used = open_altar(player, f.depth)
+                if used:
+                    f.altars.discard(pos)
             else:
-                print('Personne à qui parler ici.'); time.sleep(0.5)
+                print("Rien d'interactif ici."); time.sleep(0.5)
             continue
-        if act == 'b' and pos in f.shops:
-            open_shop(player, f.depth); continue
     
         # Déplacements
         if kind == 'move':
@@ -1661,49 +2346,28 @@ def game_loop():
                     pos = (nx, ny)
                     player.last_move = (dx, dy)
 
-                    # Escaliers
-                    if f.up and pos==f.up and cur>0:
-                        cur-=1; f=floors[cur]; pos=f.down; fatigue=0
-                        draw_box('Étage', [f"Vous montez à l'étage {cur}."], width=40); time.sleep(0.5); break
-                    if pos==f.down:
-                        cur+=1
-                        if cur>=len(floors): floors.append(Floor(cur))
-                        f=floors[cur]; pos=f.up if f.up else f.start; fatigue=0
-                        draw_box('Étage', [f"Vous descendez à l'étage {cur}."], width=44); time.sleep(0.5); break
-                    
+                    # Boss sur la case actuelle ? Prioritaire sur les rencontres normales.
+                    if pos in f.elites:
+                        status, _ = _normalize_fight_result(fight(player, f.depth, boss=True))
+                        if status == 'dead':
+                            return 'dead'
+                        if status == 'win':
+                            f.elites.discard(pos)  # boss vaincu
+                        if status == 'fled':
+                            continue
+
                     # Événements / Rencontres
                     ev = maybe_trigger_event(player, f.depth)
                     meet = (ev == 'fight') or (pos in f.monsters and random.random() < (0.30 + 0.02*f.depth + min(0.15, fatigue*0.01)))
                     if meet:
-                        res = fight(player, f.depth)
-                        if res == 'dead':
-                            print('Game over.'); return
-                        if res != 'fled' and pos in f.monsters:
-                            f.monsters.discard(pos)
-
-                        # progression quêtes (slay/survive)
-                        status, kill_id = (res if isinstance(res, tuple) else (res, None))
-
+                        status, kill_id = _normalize_fight_result(fight(player, f.depth))
                         if status == 'dead':
-                            print('Game over.'); return
+                            return 'dead'
 
                         if status != 'fled' and pos in f.monsters:
                             f.monsters.discard(pos)
 
-                        # progression quêtes (slay/survive)
-                        updated = []
-                        for i, q in enumerate(list(player.quests_active)):
-                            if q.type == 'slay' and status == 'win' and kill_id == q.target:
-                                q = q._replace(progress=min(q.amount, q.progress + 1))
-                                updated.append(q)
-                                player.quests_active[i] = q
-                            elif q.type == 'survive' and status == 'win':
-                                q = q._replace(progress=min(q.amount, q.progress + 1))
-                                updated.append(q)
-                                player.quests_active[i] = q
-
-                        if updated:
-                            maybe_autocomplete_quests(player)
+                        _apply_combat_quest_progress(player, status, kill_id)
                         fatigue = min(50, fatigue+1)
 
                     # Ramassage d'ITEMS (indépendant des trésors)
@@ -1731,22 +2395,43 @@ def game_loop():
 
                     # Trésors (⚠️ en-dehors du bloc items !)
                     if hasattr(f, 'treasures') and pos in f.treasures:
-                        took = open_treasure_choice(player, f.depth)
+                        chest_type = getattr(f, 'treasure_types', {}).get(pos, 'normal')
+                        open_treasure_choice(player, f.depth, chest_type=chest_type)
+                        if chest_type == 'boss':
+                            f.boss_treasures.discard(pos)
+                        f.treasure_types.pop(pos, None)
                         f.treasures.discard(pos)
                         # (optionnel) progression de quêtes "survive" après un choix :
                         maybe_autocomplete_quests(player)
-                    if pos in f.shops: print('Un marchand est là. Appuyez sur B pour commercer.')
-                    # Élite sur la case actuelle ?
-                    if pos in f.elites:
-                        res = fight(player, f.depth)
-                        if res == 'dead':
-                            return  # fin de partie
-                        if res == 'win':
-                            f.elites.discard(pos)  # élite vaincue
-                        # si le joueur a fui, on laisse l'élite
                 else:
+                    # Porte verrouillée : ouverture avec la bonne clé.
+                    door_type = getattr(f, 'locked_doors', {}).get((nx, ny))
+                    if door_type:
+                        if door_type == 'boss':
+                            if player.boss_keys <= 0:
+                                draw_box("Porte verrouillée", ["Il faut une clé de boss pour ouvrir cette porte."], width=88)
+                                time.sleep(0.6)
+                                break
+                            player.boss_keys -= 1
+                            door_label = "clé de boss"
+                        else:
+                            if player.normal_keys <= 0:
+                                draw_box("Porte verrouillée", ["Il faut une clé normale pour ouvrir cette porte."], width=88)
+                                time.sleep(0.6)
+                                break
+                            player.normal_keys -= 1
+                            door_label = "clé normale"
+
+                        f.locked_doors.pop((nx, ny), None)
+                        f.grid[ny][nx] = FLOOR
+                        pos = (nx, ny)
+                        draw_box("Porte ouverte", [f"Vous utilisez une {door_label}. La salle est accessible."], width=88)
+                        time.sleep(0.5)
+                        continue
                     break
             continue
+
+    return 'quit'
 
 # ========================== MAIN ==========================
 def _bfs_path_exists(grid, start, goal):
@@ -1771,12 +2456,30 @@ def run_tests():
     vis=_visible_cells(f, f.start, radius=5)
     assert f.start in vis, 'La case joueur doit être visible'
     # Résumé stats
-    p=Player('Test'); s=p.stats_summary()
+    p=Player('Test'); s=_ansi_re.sub('', p.stats_summary())
     assert 'HP:' in s and 'ATK:' in s and 'DEF:' in s and 'CRIT:' in s, 'stats_summary format invalide'
-    print('OK ✅')
+    # Normalisation du résultat de combat (régression)
+    assert _normalize_fight_result(('win', 'slime')) == ('win', 'slime')
+    assert _normalize_fight_result('fled') == ('fled', None)
+    # Upgrade item
+    it = Item('Lame test', 'weapon', 0, 4, 0, 0.02, 'Rare', 'Test.', None)
+    it2 = upgrade_item(it)
+    assert it2.atk_bonus > it.atk_bonus and it2.crit_bonus >= it.crit_bonus, 'upgrade_item invalide'
+    # Structures étage étendues
+    assert hasattr(f, 'locked_doors') and hasattr(f, 'altars') and hasattr(f, 'casinos'), 'Attributs d étage manquants'
+    print('OK')
 
 if __name__=='__main__':
     try:
-        game_loop()
+        if '--test' in sys.argv:
+            game_loop()
+        else:
+            while True:
+                result = game_loop()
+                if result == 'dead':
+                    if ask_restart_after_death():
+                        continue
+                    print("Merci d'avoir joué. À bientôt !")
+                break
     except KeyboardInterrupt:
         print('\nInterrompu. Au revoir !'); sys.exit(0)
