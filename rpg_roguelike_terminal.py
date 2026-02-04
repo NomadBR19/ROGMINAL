@@ -278,11 +278,11 @@ BALANCE = {
     'combat_gold_mult': 0.70,   # % de l'or habituel
 
     # LOOT après combat
-    'loot_item_chance': 0.45,   
-    'loot_cons_chance': 0.35,   
+    'loot_item_chance': 0.28,
+    'loot_cons_chance': 0.30,
 
     # CARTE
-    'map_items_per_floor': 3,   # au lieu de 6
+    'map_items_per_floor': 2,
     'locked_rooms_per_floor': 1,
     'boss_locked_room_chance': 0.18,
     'normal_key_drop_chance': 0.06,
@@ -305,8 +305,8 @@ BALANCE = {
     'quest_gold_mult': 0.70,
 
     # Scaling par NIVEAU du joueur et par PROFONDEUR (étage)
-    'mon_per_level':  {'hp': 0.12, 'atk': 0.10, 'def': 0.06},   # +12% PV, +10% ATK, +6% DEF / niveau
-    'mon_per_depth':  {'hp': 0.18, 'atk': 0.15, 'def': 0.08},   # +18% PV, +15% ATK, +8% DEF / étage
+    'mon_per_level':  {'hp': 0.11, 'atk': 0.09, 'def': 0.05},
+    'mon_per_depth':  {'hp': 0.14, 'atk': 0.12, 'def': 0.07},
 
     # Soft cap : au-delà d’un certain niveau, la progression ennemie ralentit
     'mon_softcap_level': 8,
@@ -338,6 +338,16 @@ BALANCE = {
     # Casino
     'casino_gamble_cost_base': 10,
     'casino_upgrade_cost_base': 30,
+
+    # Rareté (hors coffre boss): courbe plus lente pour que les communs restent utiles tôt.
+    'rarity_base_weights': {'Commun': 88, 'Rare': 8, 'Épique': 0, 'Légendaire': 0, 'Étrange': 0},
+    'rarity_depth_gain': {'Rare': 1.5, 'Épique': 0.8, 'Légendaire': 0.35, 'Étrange': 0.55},
+    'rarity_min_depth': {'Rare': 1, 'Épique': 4, 'Légendaire': 9, 'Étrange': 5},
+
+    # Coffres de boss: surtout Rare au début, puis montée progressive.
+    'boss_rarity_base_weights': {'Rare': 78, 'Épique': 18, 'Légendaire': 0},
+    'boss_rarity_depth_gain': {'Épique': 1.6, 'Légendaire': 1.0},
+    'boss_rarity_min_depth': {'Épique': 5, 'Légendaire': 10},
 }
 
 # Déplacements: ZQSD/WASD seulement
@@ -366,7 +376,7 @@ SPRITES = {
         '   ▄█▄   ', '  ▄███▄  ', ' █▓███▓█ ', '   ▓█▓   ', '   ▓█▓   ', '   ▓ ▓   ', '  ▓   ▓  ', '  ▓   ▓  ', '  ▓   ▓  '
     ],
     'slime': [
-    "       ,,",
+    "       __",
     "     (o o  )",
     "    (       )",
 ],
@@ -381,9 +391,9 @@ SPRITES = {
     ],
     'bat':   [
         "    =/\                 /\=",
-        "    /  \'._ (\_/)   _.'/ \\",
+        "    /  \'._  (\_/)   _.'/ \\",
         "   / .''._'--(o.o)--'_.''. \\",
-        "  /.' _/ |`'=/   \\='`| \\_ `.\\",
+        "  /.' _/ |`'=/   \\='`| \_`.\\",
         " /` .' `\;-,'\___/',-;/` '. '\\",
         "/.-'       `\(-V-)/`       `-.\\",
     ],
@@ -544,6 +554,91 @@ CURSED_ODDITIES = [
     Item('Talisman de peste','accessory',-6,0,0,0.00,'Étrange','Tout coup infecte.',{'poison_on_hit':3}),
     Item('Amulette de l’avare','accessory',-2,0,0,-0.04,'Étrange','L’or ou la chance ?',{ 'greed':0.4,'unlucky':0.12 }),
 ]
+
+def _rebalance_item_pool(items):
+    """Lissage medium des stats d'items pour une progression plus lisible par rareté."""
+    rarity_stat_mult = {
+        'Commun': 1.05,
+        'Rare': 0.94,
+        'Épique': 0.82,
+        'Légendaire': 0.74,
+        'Étrange': 0.90,
+    }
+    rarity_caps = {
+        'Commun': {'hp': 6, 'atk': 3, 'def': 2, 'crit': 0.03},
+        'Rare': {'hp': 10, 'atk': 6, 'def': 4, 'crit': 0.06},
+        'Épique': {'hp': 16, 'atk': 9, 'def': 7, 'crit': 0.09},
+        'Légendaire': {'hp': 21, 'atk': 11, 'def': 9, 'crit': 0.11},
+        'Étrange': {'hp': 18, 'atk': 9, 'def': 7, 'crit': 0.10},
+    }
+    special_caps = {
+        'regen': {'Rare': 2, 'Épique': 3, 'Légendaire': 4, 'Étrange': 3},
+        'thorns': {'Épique': 2, 'Légendaire': 4, 'Étrange': 4},
+        'lifesteal': {'Épique': 0.14, 'Légendaire': 0.16, 'Étrange': 0.14},
+        'dodge': {'Rare': 0.04, 'Épique': 0.05, 'Légendaire': 0.06, 'Étrange': 0.05},
+        'poison_on_hit': {'Étrange': 2},
+    }
+
+    out = []
+    for it in items:
+        if not isinstance(it, Item):
+            out.append(it)
+            continue
+
+        rar = it.rarity
+        caps = rarity_caps.get(rar, rarity_caps['Commun'])
+        mult = rarity_stat_mult.get(rar, 1.0)
+
+        def _scale_int(v, cap):
+            if v <= 0:
+                return int(v)
+            return int(min(cap, max(1, round(v * mult))))
+
+        hp = _scale_int(it.hp_bonus, caps['hp'])
+        atk = _scale_int(it.atk_bonus, caps['atk'])
+        dfn = _scale_int(it.def_bonus, caps['def'])
+        crit = it.crit_bonus
+        if crit > 0:
+            crit = min(caps['crit'], round(crit * mult, 2))
+        elif crit < 0:
+            crit = max(-caps['crit'], round(crit, 2))
+
+        # Les communs doivent rester utiles tôt.
+        if rar == 'Commun':
+            if it.slot == 'weapon':
+                atk = max(2, atk)
+            elif it.slot == 'armor':
+                hp = max(4, hp)
+                dfn = max(1, dfn)
+            elif it.slot == 'accessory' and (hp + atk + dfn) < 3 and crit <= 0:
+                hp = max(hp, 2)
+                atk = max(atk, 1)
+
+        spec = dict(it.special) if it.special else None
+        if spec:
+            for k, rules in special_caps.items():
+                if k in spec and rar in rules:
+                    val = spec[k]
+                    if isinstance(val, (int, float)):
+                        spec[k] = min(rules[rar], val)
+            if not spec:
+                spec = None
+
+        out.append(it._replace(
+            hp_bonus=hp,
+            atk_bonus=atk,
+            def_bonus=dfn,
+            crit_bonus=crit,
+            special=spec
+        ))
+    return out
+
+COMMON_ITEMS = _rebalance_item_pool(COMMON_ITEMS)
+RARE_ITEMS = _rebalance_item_pool(RARE_ITEMS)
+EPIC_ITEMS = _rebalance_item_pool(EPIC_ITEMS)
+LEGENDARY_ITEMS = _rebalance_item_pool(LEGENDARY_ITEMS)
+CURSED_ODDITIES = _rebalance_item_pool(CURSED_ODDITIES)
+
 ALL_ITEMS = COMMON_ITEMS + RARE_ITEMS + EPIC_ITEMS + LEGENDARY_ITEMS + CURSED_ODDITIES
 
 # --- Assainissement du pool global ---
@@ -569,7 +664,7 @@ CONSUMABLE_POOL = [
     Consumable('Pierre de rappel','flee','0', 'Rare', 'Permet de fuir un combat.'),
 ]
 
-RARITY_WEIGHTS_BASE = {'Commun':72,'Rare':10,'Épique':4,'Légendaire':0.5,'Étrange':8}
+RARITY_WEIGHTS_BASE = BALANCE.get('rarity_base_weights', {'Commun':72,'Rare':10,'Épique':4,'Légendaire':0.5,'Étrange':8}).copy()
 RARITY_ORDER = ['Commun','Rare','Épique','Légendaire','Étrange']
 
 # === Couleurs pour les stats ===
@@ -740,10 +835,12 @@ def scale_monster(mdef: dict, player, depth: int, elite: bool=False) -> dict:
     capL = BALANCE['mon_softcap_level']
     softM = BALANCE['mon_softcap_mult']
 
-    # Multiplicateurs séparés par stat
-    mult_hp  = _scaled_fraction(1.0, L, pl['hp'],  capL, softM) * (1.0 + depth * pd['hp'])
-    mult_atk = _scaled_fraction(1.0, L, pl['atk'], capL, softM) * (1.0 + depth * pd['atk'])
-    mult_def = _scaled_fraction(1.0, L, pl['def'], capL, softM) * (1.0 + depth * pd['def'])
+    # Multiplicateurs séparés par stat.
+    # "depth_ramp" retarde une partie du scaling: les communs restent pertinents au début.
+    depth_ramp = min(1.0, 0.35 + depth * 0.09)
+    mult_hp  = _scaled_fraction(1.0, L, pl['hp'],  capL, softM) * (1.0 + depth * pd['hp'] * depth_ramp)
+    mult_atk = _scaled_fraction(1.0, L, pl['atk'], capL, softM) * (1.0 + depth * pd['atk'] * depth_ramp)
+    mult_def = _scaled_fraction(1.0, L, pl['def'], capL, softM) * (1.0 + depth * pd['def'] * depth_ramp)
 
     if elite:
         eb = BALANCE['elite_bonus']
@@ -774,21 +871,40 @@ class DummyPlayer:
     def __init__(self): self.equipment={'weapon':None,'armor':None,'accessory':None}
     def all_specials(self): return {}
 
+def _tiered_value(depth, tiers):
+    """Retourne la valeur associée au palier le plus élevé <= depth."""
+    for min_depth, value in reversed(tiers):
+        if depth >= min_depth:
+            return value
+    return tiers[0][1]
+
+def _scaled_rarity_weights(depth, base_weights, depth_gain, min_depths):
+    w = {k: float(v) for k, v in base_weights.items()}
+    for rar, gain in depth_gain.items():
+        w[rar] = max(0.0, w.get(rar, 0.0) + max(0, depth) * float(gain))
+    for rar, dmin in min_depths.items():
+        if depth < dmin:
+            w[rar] = 0.0
+    return w
+
 def weighted_choice_by_rarity(depth, unlucky):
-    # Probabilités de base plus conservatrices pour les objets rares/épiques
-    w = RARITY_WEIGHTS_BASE.copy()
-    # Progression douce avec profondeur
-    w['Rare']        += max(0, depth*1)
-    w['Épique']      += max(0, (depth-1)//2)
-    w['Légendaire']  += max(0, depth//3)
-    w['Étrange']     += max(0, (depth-3)//3)
+    w = _scaled_rarity_weights(
+        depth,
+        BALANCE.get('rarity_base_weights', RARITY_WEIGHTS_BASE),
+        BALANCE.get('rarity_depth_gain', {}),
+        BALANCE.get('rarity_min_depth', {}),
+    )
     # Malchance réduit la probabilité des meilleures raretés
     if unlucky:
-        w['Épique'] = max(0, w['Épique']-2)
-        w['Légendaire'] = max(0, w['Légendaire']-1)
-    total = sum(w.values()); r = random.uniform(0,total); acc = 0
+        w['Rare'] = max(0.0, w.get('Rare', 0.0) - 1.0)
+        w['Épique'] = max(0.0, w.get('Épique', 0.0) - 2.0)
+        w['Légendaire'] = max(0.0, w.get('Légendaire', 0.0) - 1.5)
+    total = sum(max(0.0, v) for v in w.values())
+    if total <= 0:
+        return 'Commun'
+    r = random.uniform(0,total); acc = 0
     for k in RARITY_ORDER:
-        acc += w[k]
+        acc += max(0.0, w.get(k, 0.0))
         if r <= acc:
             return k
     return 'Commun'
@@ -812,19 +928,26 @@ def random_item(depth, player):
     return random.choice(pool)
 
 def random_boss_item(depth, player):
-    # Coffres de boss: uniquement Rare -> Légendaire.
+    # Coffres de boss: uniquement Rare -> Légendaire, avec montée graduelle.
     target_rarities = ['Rare', 'Épique', 'Légendaire']
-    lucky = max(0, depth)
-    weights = {
-        'Rare': max(15, 60 - lucky * 2),
-        'Épique': 28 + lucky * 2,
-        'Légendaire': 8 + lucky,
-    }
-
-    roll_pool = []
-    for rar in target_rarities:
-        roll_pool.extend([rar] * max(1, weights[rar]))
-    picked_rarity = random.choice(roll_pool) if roll_pool else 'Rare'
+    weights = _scaled_rarity_weights(
+        depth,
+        BALANCE.get('boss_rarity_base_weights', {'Rare': 70, 'Épique': 24, 'Légendaire': 6}),
+        BALANCE.get('boss_rarity_depth_gain', {}),
+        BALANCE.get('boss_rarity_min_depth', {}),
+    )
+    total = sum(max(0.0, weights.get(r, 0.0)) for r in target_rarities)
+    if total <= 0:
+        picked_rarity = 'Rare'
+    else:
+        r = random.uniform(0, total)
+        acc = 0.0
+        picked_rarity = 'Rare'
+        for rar in target_rarities:
+            acc += max(0.0, weights.get(rar, 0.0))
+            if r <= acc:
+                picked_rarity = rar
+                break
 
     pool = [it for it in ALL_ITEMS if isinstance(it, Item) and getattr(it, 'rarity', None) == picked_rarity]
     if not pool:
@@ -835,13 +958,73 @@ def random_boss_item(depth, player):
 
 def random_consumable(): return random.choice(CONSUMABLE_POOL)
 
+def _special_price_score(special):
+    if not special:
+        return 0.0
+    score = 0.0
+    for k, v in special.items():
+        if k == 'regen' and isinstance(v, (int, float)):
+            score += 3.2 * v
+        elif k == 'thorns' and isinstance(v, (int, float)):
+            score += 2.8 * v
+        elif k == 'lifesteal' and isinstance(v, (int, float)):
+            score += 70.0 * v
+        elif k == 'dodge' and isinstance(v, (int, float)):
+            score += 90.0 * v
+        elif k == 'poison_on_hit' and isinstance(v, (int, float)):
+            score += 2.2 * v
+        elif k == 'berserk' and isinstance(v, (int, float)):
+            score += 10.0 * v
+        elif k == 'greed' and isinstance(v, (int, float)):
+            score += 8.0 * v
+        elif k == 'fov_bonus' and isinstance(v, (int, float)):
+            score += 0.8 * v
+        elif k == 'special_dmg_mult' and isinstance(v, (int, float)):
+            score += 18.0 * max(0.0, v - 1.0)
+        elif k == 'vampirism' and isinstance(v, (int, float)):
+            score += 1.8 * v
+        elif k == 'unlucky' and isinstance(v, (int, float)):
+            score -= 80.0 * v
+        elif k == 'bleed_self' and isinstance(v, (int, float)):
+            score -= 2.5 * v
+        elif k == 'special_cost_mult' and isinstance(v, (int, float)):
+            score -= 16.0 * max(0.0, v - 1.0)
+        elif k in ('cursed', 'heavy', 'glass') and bool(v):
+            score -= 4.0
+        elif k == 'chaos' and bool(v):
+            score += 3.5
+    return score
+
 def price_of(it):
     if isinstance(it, Consumable):
-        return {'Commun':12,'Rare':55,'Épique':90,'Légendaire':180,'Étrange':70}.get(it.rarity,20)
-    score = it.hp_bonus*1.2 + it.atk_bonus*4 + it.def_bonus*3 + it.crit_bonus*60
-    rar = {'Commun':1.0,'Rare':2.7,'Épique':3.5,'Légendaire':4.5,'Étrange':2.7}.get(it.rarity,1.0)
-    spec = 1.0 + (0.3*(len(it.special) if it.special else 0))
-    return int(max(8, score*rar*spec))
+        return {
+            'Commun': 12,
+            'Rare': 32,
+            '\u00c9pique': 52,
+            'L\u00e9gendaire': 84,
+            '\u00c9trange': 44,
+        }.get(it.rarity, 20)
+
+    pos = (
+        max(0, it.hp_bonus) * 0.9
+        + max(0, it.atk_bonus) * 3.0
+        + max(0, it.def_bonus) * 2.4
+        + max(0, it.crit_bonus) * 75.0
+    )
+    neg = (
+        abs(min(0, it.hp_bonus)) * 0.6
+        + abs(min(0, it.atk_bonus)) * 2.2
+        + abs(min(0, it.def_bonus)) * 1.8
+        + abs(min(0, it.crit_bonus)) * 55.0
+    )
+    base_score = max(1.0, pos - neg + _special_price_score(it.special))
+
+    rarity_flat = {'Commun': 7, 'Rare': 16, '\u00c9pique': 29, 'L\u00e9gendaire': 45, '\u00c9trange': 18}
+    rarity_mult = {'Commun': 1.00, 'Rare': 1.15, '\u00c9pique': 1.24, 'L\u00e9gendaire': 1.34, '\u00c9trange': 1.10}
+    min_price = {'Commun': 8, 'Rare': 16, '\u00c9pique': 28, 'L\u00e9gendaire': 42, '\u00c9trange': 14}
+
+    price = rarity_flat.get(it.rarity, 8) + base_score * rarity_mult.get(it.rarity, 1.0)
+    return int(max(min_price.get(it.rarity, 8), round(price)))
 
 def choose_floor_destination(current_depth, direction):
     """
@@ -1390,17 +1573,45 @@ def _try_grant_normal_key(player, depth, bonus_chance=0.0):
         player.normal_keys += 1
         print(c("Vous récupérez une clé normale.", Ansi.BRIGHT_YELLOW))
 
+def _normal_monster_ids_for_depth(depth):
+    if depth <= 1:
+        return {'slime', 'bat', 'goblin'}
+    if depth <= 3:
+        return {'slime', 'bat', 'goblin', 'skeleton'}
+    if depth <= 6:
+        return {'slime', 'bat', 'goblin', 'skeleton', 'esprit'}
+    return {'slime', 'bat', 'goblin', 'skeleton', 'esprit', 'diable', 'dragon'}
+
+def _combat_item_drop_chance(depth):
+    return _tiered_value(depth, [
+        (0, 0.18),
+        (3, 0.23),
+        (6, 0.28),
+        (10, 0.34),
+        (15, 0.40),
+    ])
+
+def _combat_cons_drop_chance(depth):
+    return _tiered_value(depth, [
+        (0, 0.28),
+        (6, 0.30),
+        (12, 0.34),
+    ])
+
 def fight(player, depth, boss=False):
     if boss:
         pool = [m for m in MONSTER_DEFS if m['id'] in ('diable', 'dragon')]
         mdef = random.choice(pool).copy()
     else:
-        heavy_pool = [m for m in MONSTER_DEFS if m['id'] in ('diable', 'dragon')]
-        normal_pool = [m for m in MONSTER_DEFS if m['id'] not in ('diable', 'dragon')]
+        allowed = _normal_monster_ids_for_depth(depth)
+        heavy_pool = [m for m in MONSTER_DEFS if m['id'] in ('diable', 'dragon') and m['id'] in allowed]
+        normal_pool = [m for m in MONSTER_DEFS if m['id'] in allowed and m['id'] not in ('diable', 'dragon')]
         heavy_chance = BALANCE.get('nonboss_diable_dragon_chance', 0.04)
         # Pas de diable/dragon trop tôt, puis faible chance ensuite.
-        if depth < 4:
+        if depth < 6:
             heavy_chance = 0.0
+        elif depth < 10:
+            heavy_chance *= 0.5
         if heavy_pool and random.random() < heavy_chance:
             mdef = random.choice(heavy_pool).copy()
         else:
@@ -1547,14 +1758,14 @@ def fight(player, depth, boss=False):
                 f"+{color_val('OR', gold_gain)} {color_label('OR')}"
             )
             # Drop d'objet (indépendant)
-            if random.random() < BALANCE['loot_item_chance']:
+            if random.random() < _combat_item_drop_chance(depth):
                 item = random_item(depth, player)
                 print('Butin:', item_summary(item))
                 if len(player.inventory) < player.inventory_limit:
                     player.inventory.append(item)
 
             # Drop de consommable (indépendant de l'objet)
-            if random.random() < BALANCE['loot_cons_chance']:
+            if random.random() < _combat_cons_drop_chance(depth):
                 cons = random_consumable()
                 print('Butin:', item_summary(cons))
                 if len(player.consumables) < player.consumables_limit:
@@ -1619,6 +1830,18 @@ def journal(player):
     clear_screen(); draw_box('Journal de quêtes', rows, width=max(MAP_W, 80)); pause()
 
 # ========================== CARTE & ÉTAGES ==========================
+def _monsters_per_floor(depth):
+    # Progression plus douce que 8 + depth*2, pour limiter la surabondance de loot.
+    return max(5, 6 + depth + depth // 2)
+
+def _map_items_per_floor(depth):
+    # Les étages initiaux restent sobres; la densité d'objets monte ensuite.
+    return _tiered_value(depth, [
+        (0, BALANCE.get('map_items_per_floor', 2)),
+        (4, 3),
+        (10, 4),
+    ])
+
 class Floor:
     def __init__(self,depth):
         self.depth=depth
@@ -1647,10 +1870,11 @@ class Floor:
             s=self._random_floor_pos(occ); self.shops.add(s); occ.add(s)
         # Monstres & Items
         self.monsters=set()
-        for _ in range(8+depth*2): pos=self._random_floor_pos(occ); occ.add(pos); self.monsters.add(pos)
+        for _ in range(_monsters_per_floor(depth)):
+            pos=self._random_floor_pos(occ); occ.add(pos); self.monsters.add(pos)
         self.items = set()
         # Items aléatoires, au moins 1 par étage
-        for _ in range(BALANCE['map_items_per_floor']):
+        for _ in range(_map_items_per_floor(depth)):
             pos = self._random_floor_pos(occ); occ.add(pos); self.items.add(pos)
 
         # Trésors
@@ -1965,10 +2189,11 @@ def open_treasure_choice(player, depth, chest_type='normal'):
     N'affiche que des messages, ne touche pas aux trésors de l'étage (la boucle d'explo s'en charge).
     """
     try:
-        def loot_label(it):
+        def chest_item_label(it):
             if isinstance(it, Consumable):
                 return item_summary(it)
-            return c(item_summary(it), rarity_color(it.rarity))
+            slot_label = {'weapon': 'Arme', 'armor': 'Armure', 'accessory': 'Accessoire'}.get(it.slot, it.slot)
+            return f"{it.name} [{slot_label}] [{it.rarity}] — {it.description}"
 
         # Les coffres de boss proposent plus d'options et un niveau de loot plus élevé.
         pick_count = 4 if chest_type == 'boss' else 3
@@ -2003,12 +2228,12 @@ def open_treasure_choice(player, depth, chest_type='normal'):
         rarity_score = sum(rarity_xp.get(getattr(it, 'rarity', 'Commun'), 0) for it in choices)
 
         while True:
-            rows = [f"{i+1}) {loot_label(it)}  {preview_delta(player,it)}" for i,it in enumerate(choices)]
+            rows = [f"{i+1}) {c(chest_item_label(it), rarity_color(it.rarity))}  {preview_delta(player,it)}" for i,it in enumerate(choices)]
             rows += ["", f"Choisissez 1-{pick_count}, ou 'q' pour ignorer"]
             clear_screen()
             # Si tu as des thèmes d'étage, passe theme=floor.theme ici via l'appelant
             chest_title = 'Coffre de boss !' if chest_type == 'boss' else 'Trésor !'
-            draw_box(chest_title, rows, width=max(172, MAP_W + 24))
+            draw_box(chest_title, rows, width=max(140, MAP_W + 24))
 
             cmd = input('> ').strip().lower()
             if cmd in ('q',''):
@@ -2029,7 +2254,7 @@ def open_treasure_choice(player, depth, chest_type='normal'):
                         # Par sécurité, mais en principe on n'en a pas ici
                         if len(player.consumables) < player.consumables_limit:
                             player.consumables.append(it)
-                            draw_box('Trésor', [f"Vous prenez: {item_summary(it)} (consommable)"], width=164)
+                            draw_box('Trésor', [f"Vous prenez: {item_summary(it)} (consommable)"], width=140)
                             pause()
                             return True
                         else:
@@ -2039,7 +2264,7 @@ def open_treasure_choice(player, depth, chest_type='normal'):
                     else:
                         if len(player.inventory) < player.inventory_limit:
                             player.inventory.append(it)
-                            draw_box('Trésor', [f"Vous prenez: {loot_label(it)}"], width=164)
+                            draw_box('Trésor', [f"Vous prenez: {c(chest_item_label(it), rarity_color(it.rarity))}"], width=140)
                             pause()
                             return True
                         else:
