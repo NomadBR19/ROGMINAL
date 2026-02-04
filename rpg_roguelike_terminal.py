@@ -336,8 +336,8 @@ BALANCE = {
     'regen_every_n_turns': 1, # 1 = chaque tour, 2 = un tour sur deux, etc.
 
     # Casino
-    'casino_gamble_cost_base': 35,
-    'casino_upgrade_cost_base': 65,
+    'casino_gamble_cost_base': 10,
+    'casino_upgrade_cost_base': 30,
 }
 
 # Déplacements: ZQSD/WASD seulement
@@ -381,7 +381,7 @@ SPRITES = {
     ],
     'bat':   [
         "    =/\                 /\=",
-        "    /  \'._  (\_/)   _.'/ \\",
+        "    /  \'._ (\_/)   _.'/ \\",
         "   / .''._'--(o.o)--'_.''. \\",
         "  /.' _/ |`'=/   \\='`| \\_ `.\\",
         " /` .' `\;-,'\___/',-;/` '. '\\",
@@ -643,7 +643,6 @@ class Player(Character):
         self.normal_keys = 1
         self.boss_keys = 0
         self.altar_history = []
-        self.casino_last_upgrade_level = 0
         self.passive_specials = {}
     def equip(self,item):
         slot=item.slot; old=self.equipment.get(slot)
@@ -916,17 +915,36 @@ def upgrade_item(it):
     )
 
 def open_casino(player, depth):
+    BOX_W = max(140, MAP_W + 44)
     gamble_cost = BALANCE['casino_gamble_cost_base'] + depth * 2
     upgrade_cost = BALANCE['casino_upgrade_cost_base'] + player.level * 5
     while True:
-        rows = [
-            f"Or disponible : {player.gold}",
+        equipped = [(slot, it) for slot, it in player.equipment.items() if it]
+
+        main_rows = [
+            f"Or disponible : {c(str(player.gold), Ansi.YELLOW)}",
+            f"Étage : {depth}  |  Niveau : {player.level}",
             "",
             f"1) Miser {gamble_cost} or pour un item aléatoire",
-            f"2) Upgrader un objet équipé ({upgrade_cost} or, 1 fois tous les 5 niveaux)",
+            f"2) Upgrader un objet équipé ({upgrade_cost} or)",
             "q) Quitter",
         ]
-        draw_box("Casino clandestin", rows, width=90)
+
+        equip_rows = [c("Objets équipés (upgrade)", Ansi.BRIGHT_MAGENTA)]
+        if not equipped:
+            equip_rows.append(c("(Aucun objet équipé)", Ansi.BRIGHT_BLACK))
+        else:
+            for i, (slot, it) in enumerate(equipped, 1):
+                equip_rows.append(f"{i:>2}) {slot}: {item_summary(it)}")
+        equip_rows.append("")
+        equip_rows.append(c("Upgrade disponible à tout niveau.", Ansi.BRIGHT_GREEN))
+        equip_rows.append("Tapez 2 puis le numéro de l'objet.")
+
+        clear_screen()
+        draw_box("Casino clandestin", main_rows, width=BOX_W)
+        print()
+        draw_box("Panneau upgrade", equip_rows, width=BOX_W)
+
         cmd = input("> ").strip().lower()
         if cmd == "q":
             return
@@ -940,20 +958,15 @@ def open_casino(player, depth):
             loot_depth = depth + (2 if roll < 0.12 else (1 if roll < 0.45 else 0))
             it = random_item(max(0, loot_depth), player)
             player.inventory.append(it)
-            draw_box("Casino", [f"Vous gagnez: {item_summary(it)}"], width=130)
+            draw_box("Casino", [f"Vous gagnez: {item_summary(it)}"], width=BOX_W)
             pause()
             continue
         if cmd == "2":
-            if player.level < 5 or player.level % 5 != 0:
-                print("Upgrade dispo uniquement aux niveaux multiples de 5."); time.sleep(0.8); continue
-            if player.casino_last_upgrade_level >= player.level:
-                print("Vous avez déjà utilisé l'upgrade pour ce palier."); time.sleep(0.8); continue
             if player.gold < upgrade_cost:
                 print("Pas assez d'or."); time.sleep(0.7); continue
-            equipped = [(slot, it) for slot, it in player.equipment.items() if it]
             if not equipped:
                 print("Aucun objet équipé à upgrader."); time.sleep(0.7); continue
-            draw_box("Upgrade casino", [f"{i+1}) {slot}: {item_summary(it)}" for i, (slot, it) in enumerate(equipped)] + ["q) Annuler"], width=140)
+            draw_box("Upgrade casino", [f"{i+1}) {slot}: {item_summary(it)}" for i, (slot, it) in enumerate(equipped)] + ["q) Annuler"], width=BOX_W)
             pick = input("> ").strip().lower()
             if pick == "q":
                 continue
@@ -966,8 +979,7 @@ def open_casino(player, depth):
             new_item = upgrade_item(old)
             player.equipment[slot] = new_item
             player._apply_modifiers(new_item, remove=False)
-            player.casino_last_upgrade_level = player.level
-            draw_box("Upgrade réussi", [f"{old.name} -> {new_item.name}"], width=90)
+            draw_box("Upgrade réussi", [f"{old.name} -> {new_item.name}"], width=BOX_W)
             pause()
             continue
         print("Commande inconnue."); time.sleep(0.6)
@@ -1987,6 +1999,8 @@ def open_treasure_choice(player, depth, chest_type='normal'):
             choices = [it if not isinstance(it, Consumable) else random.choice(boss_pool) for it in choices]
         else:
             choices = [it if not isinstance(it, Consumable) else random.choice(COMMON_ITEMS) for it in choices]
+        rarity_xp = {'Commun': 0, 'Rare': 1, 'Épique': 3, 'Légendaire': 6, 'Étrange': 2}
+        rarity_score = sum(rarity_xp.get(getattr(it, 'rarity', 'Commun'), 0) for it in choices)
 
         while True:
             rows = [f"{i+1}) {loot_label(it)}  {preview_delta(player,it)}" for i,it in enumerate(choices)]
@@ -1998,7 +2012,9 @@ def open_treasure_choice(player, depth, chest_type='normal'):
 
             cmd = input('> ').strip().lower()
             if cmd in ('q',''):
-                xp_gain = max(1, 2 + depth + (2 if chest_type == 'boss' else 0))
+                base_xp = 2 + depth + (2 if chest_type == 'boss' else 0)
+                rarity_bonus = int(round(rarity_score * (1.15 if chest_type == 'boss' else 1.0)))
+                xp_gain = max(1, base_xp + rarity_bonus)
                 player.gain_xp(xp_gain)
                 draw_box('Trésor', [f"Vous laissez le coffre. Sagesse prudente: +{xp_gain} XP."], width=112)
                 time.sleep(0.6)
