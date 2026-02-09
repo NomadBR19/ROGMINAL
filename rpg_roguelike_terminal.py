@@ -1,14 +1,5 @@
 """
-RPG / Roguelike terminal — Quêtes + Marchand bi‑panneau + Difficulté progressive
-- Déplacements **ZQSD/WASD uniquement** (➜ pas de diagonales)
-- **PNJ** avec **quêtes** (chasse/collecte/survie) et **journal (J)**
-- **Marchand ($)** avec interface **double** : stock du vendeur ⟷ inventaire du joueur (achat/vente en parallèle)
-- Carte procédurale **Zelda‑like** (pièces + couloirs), **contour blanc** et **fog of war**
-- Combats : **compteur PV** "19/20 PV" (pas de barre)
-- Sprites blocs & couleurs conservés
-
-Lancez : python rpg_roguelike_terminal.py
-Options : --test (lance des tests rapides)
+RPG / Roguelike terminal 
 """
 
 import os, sys, time, random, re, ctypes, math
@@ -36,7 +27,8 @@ def _getch_blocking():
 def read_command(repeat_last_dir):
     """
     Retourne toujours un 2-tuple :
-      ('move', (n, (dx,dy)))  ou  ('action', 'e'|'i'|'j'|'c'|'x'|None)
+      ('move', (n, (dx,dy)))  ou  ('action', 'e'|'i'|'j'|'c'|'m'|'x'|None)
+      ou ('quick_spell', index_1_based)
     """
     digits = ''
     while True:
@@ -46,6 +38,10 @@ def read_command(repeat_last_dir):
         if ch in ('\r', '\n', '\x1b'):
             digits = ''
             continue
+
+        # Raccourcis sorts (AZERTY rangée 1 sans passer par le grimoire)
+        if ch in QUICK_SPELL_KEYS:
+            return ('quick_spell', QUICK_SPELL_KEYS[ch])
 
         if ch.isdigit():
             digits += ch
@@ -61,16 +57,19 @@ def read_command(repeat_last_dir):
             n = int(digits) if digits else 1
             return ('move', (n, DIR_KEYS[ch]))
 
-        if ch in ('e','i','j','c','x'):
+        if ch in ('e','i','j','c','m','x'):
             return ('action', ch)
 
-        # (optionnel) support flèches sous Windows
-        if os.name == 'nt' and ch == '\xe0':
+        # (optionnel) support flèches/pavé numérique sous Windows
+        if os.name == 'nt' and ch in ('\xe0', '\x00'):
             k = _getch_blocking()
             arrow_map = {'H':'z','P':'s','K':'q','M':'d'}  # ↑ ↓ ← →
+            numpad_spell_map = {'O':1, 'Q':3, 'G':7, 'I':9, 'R':10}
             if k in arrow_map:
                 n = int(digits) if digits else 1
                 return ('move', (n, DIR_KEYS[arrow_map[k]]))
+            if k in numpad_spell_map:
+                return ('quick_spell', numpad_spell_map[k])
             continue
 
         # touche non gérée → on ignore et on ré-écoute
@@ -182,28 +181,79 @@ _ansi_re = re.compile(r"\x1b\[[0-9;]*m")
 def visible_len(s: str) -> int:
     return len(_ansi_re.sub("", s))
 
+def _cut_ansi_visible(s: str, max_visible: int):
+    """Découpe s en (left, right) avec left contenant au plus max_visible chars visibles."""
+    if max_visible <= 0:
+        return "", s
+    i = 0
+    vis = 0
+    while i < len(s) and vis < max_visible:
+        m = _ansi_re.match(s, i)
+        if m:
+            i = m.end()
+            continue
+        if s[i] in ("\r", "\n"):
+            break
+        vis += 1
+        i += 1
+    return s[:i], s[i:]
+
+def _pad_ansi_right(s: str, width: int) -> str:
+    """Pad à droite en se basant sur la largeur visible (ignore les codes ANSI)."""
+    return s + (' ' * max(0, int(width) - visible_len(s)))
+
 def wrap_ansi(s: str, width: int) -> list[str]:
-    # wrap doux sans couper les codes ANSI
-    out, cur = [], ""
-    vlen = 0
-    for ch in s:
+    # Wrap robuste: respecte \n et évite de couper les séquences ANSI.
+    width = max(1, int(width))
+    out = []
+    cur = ""
+    cur_vis = 0
+    last_space_idx = -1
+    i = 0
+    while i < len(s):
+        m = _ansi_re.match(s, i)
+        if m:
+            cur += m.group(0)
+            i = m.end()
+            continue
+        ch = s[i]
+        i += 1
+        if ch == '\r':
+            continue
+        if ch == '\n':
+            out.append(cur)
+            cur = ""
+            cur_vis = 0
+            last_space_idx = -1
+            continue
         cur += ch
-        if ch == "\x1b":  # laisser passer la séquence ANSI complète
-            # on ne compte pas dans vlen, visible_len gère
-            pass
-        else:
-            vlen = visible_len(cur)
-            if vlen >= width:
-                out.append(cur)
-                cur, vlen = "", 0
-    if cur:
+        cur_vis += 1
+        if ch.isspace():
+            last_space_idx = len(cur)
+        if cur_vis > width:
+            if last_space_idx > 0:
+                left = cur[:last_space_idx].rstrip()
+                right = cur[last_space_idx:].lstrip()
+                out.append(left)
+                cur = right
+            else:
+                left, right = _cut_ansi_visible(cur, width)
+                out.append(left)
+                cur = right.lstrip()
+            cur_vis = visible_len(cur)
+            last_space_idx = -1
+    if cur or not out:
         out.append(cur)
     return out
 
-def draw_box(title: str, lines, width: int | None = None):
+def draw_box(title: str, lines, width: int | None = None, border_style=None, title_style=None):
     if isinstance(lines, (str, bytes)):
         lines = [str(lines)]
-    lines = [str(x) for x in lines]
+    normalized_lines = []
+    for x in lines:
+        txt = str(x).replace('\r\n', '\n').replace('\r', '\n')
+        normalized_lines.extend(txt.split('\n'))
+    lines = normalized_lines
 
     # largeur mini/maxi + calcul auto selon contenu visible
     content_w = max((visible_len(l) for l in lines), default=0)
@@ -211,18 +261,21 @@ def draw_box(title: str, lines, width: int | None = None):
     target = max(60, content_w, visible_len(title_text), 100)
     width = max(60, min(200, width or target))  # ← max 200
 
+    border_style = border_style or Ansi.BRIGHT_WHITE
+    title_style = title_style or Ansi.BRIGHT_YELLOW
+
     top = '┌' + '─'*width + '┐'
     mid = '├' + '─'*width + '┤'
     bot = '└' + '─'*width + '┘'
-    print(c(top, Ansi.BRIGHT_WHITE))
+    print(c(top, border_style))
     pad = max(0, width - visible_len(title_text))
-    print(c('│', Ansi.BRIGHT_WHITE) + c(title_text + ' '*pad, Ansi.BRIGHT_YELLOW) + c('│', Ansi.BRIGHT_WHITE))
-    print(c(mid, Ansi.BRIGHT_WHITE))
+    print(c('│', border_style) + c(title_text + ' '*pad, title_style) + c('│', border_style))
+    print(c(mid, border_style))
     for ln in lines:
         for part in wrap_ansi(ln, width):
             pad = max(0, width - visible_len(part))
-            print(c('│', Ansi.BRIGHT_WHITE) + part + ' '*pad + c('│', Ansi.BRIGHT_WHITE))
-    print(c(bot, Ansi.BRIGHT_WHITE))
+            print(c('│', border_style) + part + ' '*pad + c('│', border_style))
+    print(c(bot, border_style))
 
 # ========================== RENDU DU PERSONNAGE ==========================
 def _tint_line_red(line: str, strong=False):
@@ -268,8 +321,13 @@ ELITE_ICON = 'Ω'
 CASINO_ICON = 'C'
 ALTAR_ICON = '+'
 LOCKED_DOOR_ICON = 'D'
-HUD_CONTROLS = '[ZQSD/WASD] déplacer • E interagir • I inventaire • C stats • J journal • X quitter'
-MENU_CONTROLS = "Commandes : ZQSD/WASD se déplacer • E interagir (PNJ/boutique/autel/casino) • I inventaire • C stats • J journal • X quitter"
+SAGE_ICON = 'S'
+HUD_CONTROLS = '[ZQSD/WASD] déplacer • E interagir • I inventaire • C stats • J journal • M grimoire • &é"\'(-/è_çà sorts rapides • X quitter'
+MENU_CONTROLS = "Commandes : ZQSD/WASD se déplacer • E interagir (PNJ/boutique/autel/casino/sorcier) • I inventaire • C stats • J journal • M grimoire • & é \" ' ( - / è _ ç à = sorts rapides • X quitter"
+QUICK_SPELL_KEYS = {
+    '&': 1, 'é': 2, '"': 3, "'": 4, '(': 5, '-': 6,
+    'è': 7, '_': 8, 'ç': 9, 'à': 10,
+}
 
 # ========================== BALANCE ==========================
 BALANCE = {
@@ -338,16 +396,29 @@ BALANCE = {
     # Casino
     'casino_gamble_cost_base': 10,
     'casino_upgrade_cost_base': 30,
+    'casino_upgrade_break_chance': 0.04,
 
     # Rareté (hors coffre boss): courbe plus lente pour que les communs restent utiles tôt.
     'rarity_base_weights': {'Commun': 88, 'Rare': 8, 'Épique': 0, 'Légendaire': 0, 'Étrange': 0},
-    'rarity_depth_gain': {'Rare': 1.5, 'Épique': 0.8, 'Légendaire': 0.35, 'Étrange': 0.55},
-    'rarity_min_depth': {'Rare': 1, 'Épique': 4, 'Légendaire': 9, 'Étrange': 5},
+    'rarity_depth_gain': {'Rare': 1.5, 'Épique': 0.8, 'Légendaire': 0.35, 'Étrange': 0.0},
+    'rarity_min_depth': {'Rare': 1, 'Épique': 4, 'Légendaire': 9, 'Étrange': 999},
 
     # Coffres de boss: surtout Rare au début, puis montée progressive.
     'boss_rarity_base_weights': {'Rare': 78, 'Épique': 18, 'Légendaire': 0},
     'boss_rarity_depth_gain': {'Épique': 1.6, 'Légendaire': 1.0},
     'boss_rarity_min_depth': {'Épique': 5, 'Légendaire': 10},
+
+    # Magie / Grimoire
+    'spell_sage_start_depth': 3,
+    'spell_sage_every': 5,
+    'spell_drop_base_chance': 0.012,     # très rare
+    'spell_drop_depth_bonus': 0.0012,
+    'spell_shop_min_depth': 8,
+    'spell_shop_offer_chance': 0.65,
+    'spell_shop_price_mult': 1.0,
+    'summon_spell_cooldown_floors': 5,
+    'sage_reroll_cost_base': 240,
+    'sage_reroll_cost_depth_mult': 20,
 }
 
 # Déplacements: ZQSD/WASD seulement
@@ -372,9 +443,23 @@ SPRITES = {
         "      |||",
         "     /_|_\\",
     ],
-    'mage': [
-        '   ▄█▄   ', '  ▄███▄  ', ' █▓███▓█ ', '   ▓█▓   ', '   ▓█▓   ', '   ▓ ▓   ', '  ▓   ▓  ', '  ▓   ▓  ', '  ▓   ▓  '
+    'sorcier': [
+        "                        .",
+        "             /^\     .",
+        "       /\\    \"V\"",
+        "      /__\    I      O  o",
+        "     //..\\   I     .",
+        "     \].`[/   I",
+        "     /l\/j\  (]    .  O",
+        "    /. ~~ ,\/ I          .",
+        "    \\L__j^\/ I       o",
+        "     \/--v}   I     o   .",
+        "     |    |   I,  _________",
+        "     |    |   I c(`       ')o,",
+        "     |    l   I   \.     ,/,",
+        "   _/j  L l\_!   _//^---^\\_",   
     ],
+    
     'slime': [
     "       __",
     "     (o o  )",
@@ -447,6 +532,32 @@ SPRITES = {
 Item = namedtuple('Item',[ 'name','slot','hp_bonus','atk_bonus','def_bonus','crit_bonus','rarity','description','special' ])
 Consumable = namedtuple('Consumable',['name','effect','power','rarity','description'])
 Quest = namedtuple('Quest', ['qid','type','target','amount','progress','giver_floor','giver_pos','giver_name','reward_xp','reward_gold','status'])
+Spell = namedtuple('Spell', ['sid', 'name', 'rarity', 'kind', 'description', 'power'])
+
+SPELL_BOOK_NPC = {'name': 'S', 'title': 'Sorcier'}
+SPELLS = [
+    Spell('pulse', 'Impulsion', 'Commun', 'combat', 'Cantrip simple et stable.', 4),
+    Spell('clairvoyance', 'Clairvoyance', 'Commun', 'explore', 'Vision accrue sur l’étage courant.', 1),
+    Spell('warding_mist', 'Brume de garde', 'Commun', 'explore', 'Petit voile de protection magique.', 1),
+    Spell('mending', 'Soin léger', 'Commun', 'combat', 'Restaure une petite quantité de PV.', 12),
+    Spell('spark', 'Étincelle', 'Rare', 'combat', 'Projectile arcanique fiable.', 6),
+    Spell('frostbind', 'Lien de givre', 'Rare', 'combat', 'Dégâts + affaiblit l’attaque ennemie.', 4),
+    Spell('arcbolt', 'Arc voltaïque', 'Rare', 'combat', 'Décharge instable à gros écart.', 6),
+    Spell('arcane_skin', 'Peau arcanique', 'Rare', 'explore', 'Bouclier magique temporaire.', 1),
+    Spell('gild_touch', 'Toucher doré', 'Rare', 'explore', 'Transmute un peu de mana en or.', 18),
+    Spell('summon_slime', 'Invocation: Slime', 'Rare', 'combat', 'Invoque un slime gardien persistant.', 1),
+    Spell('greater_mending', 'Soin moyen', 'Rare', 'combat', 'Restaure une quantité moyenne de PV.', 24),
+    Spell('siphon', 'Siphon nocturne', 'Épique', 'combat', 'Dégâts modérés + soin partiel.', 6),
+    Spell('rift', 'Faille courte', 'Épique', 'combat', 'Impact précis sur une faille arcanique.', 8),
+    Spell('summon_skeleton', 'Invocation: Squelette', 'Épique', 'combat', 'Invoque un squelette combattant persistant.', 2),
+    Spell('prospection', 'Prospection', 'Épique', 'explore', 'Transmute du mana en or.', 24),
+    Spell('focus_sigil', 'Sceau de focalisation', 'Épique', 'explore', 'Focus arcanique pour l’étage courant.', 1),
+    Spell('teleport', 'Translocation', 'Épique', 'explore', 'Téléporte près de l’escalier de descente.', 0),
+    Spell('nova', 'Nova runique', 'Légendaire', 'combat', 'Explosion puissante.', 12),
+    Spell('comet', 'Comète astrale', 'Légendaire', 'combat', 'Impact lourd aux dégâts volatils.', 10),
+    Spell('summon_dragon', 'Invocation: Dragonnet', 'Légendaire', 'combat', 'Invoque un dragonnet ancestral persistant.', 4),
+]
+SPELLS_BY_ID = {sp.sid: sp for sp in SPELLS}
 
 COMMON_ITEMS = [
     Item('Épée rouillée','weapon',0,2,0,0.00,'Commun','Vieille lame.',None),
@@ -533,26 +644,14 @@ LEGENDARY_ITEMS = [
     Item('Épée des millénaires','weapon',0,14,0,0.04,'Légendaire','A vu des empires naître.',None),
 ]
 CURSED_ODDITIES = [
-    Item('Anneau maudit','accessory',-12,5,0,0.00,'Étrange','Puissant mais dangereux.',{'cursed':True}),
-    Item('Amulette du sang','accessory',-5,0,0,0.08,'Étrange','Le sang appelle le sang.',{'vampirism':8}),
-    Item('Talisman toxique','accessory',0,0,0,0.00,'Étrange','Chaque coup empoisonne.',{'poison_on_hit':2}),
-    Item('Écaille noire','armor',6,0,2,0.0,'Étrange','Difficile à retirer.',{'cursed':True,'dodge':0.03}),
-    Item('Bourse maudite','accessory',6,0,-2,-0.02,'Étrange',"L’or coule... mais la chance te fuit.",{'greed':0.30,'unlucky':0.08}),
-    Item('Cape de brume','armor',-6,0,2,0.00,'Étrange','Tu vois plus loin à travers la brume.',{'fov_bonus':2,'unlucky':0.05}),
-    Item('Épine noire','accessory',-4,0,0,0.00,'Étrange','Blesse ceux qui te frappent. Prix du sang.',{'thorns':5,'bleed_self':2}),
-    Item('Sceau du pacte','accessory',0,2,0,0.00,'Étrange','Ta compétence dévore tes PV, mais ravage l’ennemi.',{'special_cost_mult':1.8,'special_dmg_mult':1.4}),
-    Item('Masque triste','accessory',-6,3,0,0.00,'Étrange','Force mélancolique.',{'unlucky':0.05}),
-    Item('Bottes ferrées','accessory',8,0,3,-0.05,'Étrange','Chaque pas résonne.',{'heavy':True}),
-    Item('Lame sanglante','weapon',-4,9,0,0.00,'Étrange','Réclame un tribut.',{'bleed_self':3}),
-    Item('Cape souillée','armor',-8,0,3,0.00,'Étrange','Repousse les rares fortunes.',{'unlucky':0.1}),
-    Item('Anneau du paria','accessory',-5,2,0,0.06,'Étrange','Acéré mais maudit.',{'unlucky':0.08}),
-    Item('Sablier fêlé','accessory',-6,0,0,0.00,'Étrange','Temps contre toi.',{'special_cost_mult':1.4,'special_dmg_mult':1.2}),
-    Item('Parchemin de rage','accessory',-8,4,0,0.00,'Étrange','Furie contrôlée.',{'berserk':0.5}),
-    Item('Lanterne brumeuse','accessory',-4,0,0,0.00,'Étrange','Vois mais perds la chance.',{'fov_bonus':2,'unlucky':0.06}),
-    Item('Gantelet d’épines','armor',-2,0,4,0.00,'Étrange','Blesse qui frappe.',{'thorns':4}),
-    Item('Pacte gris','accessory',0,3,0,0.00,'Étrange','Puissance à crédit.',{'special_cost_mult':1.6,'special_dmg_mult':1.3}),
-    Item('Talisman de peste','accessory',-6,0,0,0.00,'Étrange','Tout coup infecte.',{'poison_on_hit':3}),
-    Item('Amulette de l’avare','accessory',-2,0,0,-0.04,'Étrange','L’or ou la chance ?',{ 'greed':0.4,'unlucky':0.12 }),
+    Item('Sceau d’apprenti','accessory',3,0,1,0.01,'Rare','Canalisation de base.',{'pouv':1,'spell_power':0.10}),
+    Item('Bâton de veille','weapon',0,3,0,0.01,'Rare','Amplifie les cantrips.',{'pouv':2,'spell_damage':1}),
+    Item('Manteau des runes','armor',6,0,2,0.00,'Rare','Fils de mana tissés.',{'pouv':1,'spell_defense':1}),
+    Item('Anneau de concentration','accessory',4,1,0,0.01,'Rare','Réduit les pertes de focus.',{'pouv':2,'spell_power':0.12}),
+    Item('Orbe des veilleurs','accessory',2,0,1,0.02,'Rare','Un emplacement de sort supplémentaire.',{'pouv':1,'spell_slots':1}),
+    Item('Codex fragmenté','accessory',3,0,1,0.01,'Rare','Fragments d’incantations.',{'pouv':2,'spell_slots':1,'spell_power':0.08}),
+    Item('Grimoire ferré','armor',7,0,3,0.00,'Rare','Plaques gravées de glyphes.',{'pouv':2,'spell_defense':1,'spell_slots':1}),
+    Item('Bague du pyromant','accessory',0,2,0,0.02,'Rare','Renforce les sorts offensifs.',{'pouv':3,'spell_damage':2,'spell_power':0.06}),
 ]
 
 def _rebalance_item_pool(items):
@@ -663,6 +762,21 @@ CONSUMABLE_POOL = [
     Consumable('Potion de rage','buff_atk',4,'Rare','ATK +4 (3 tours).'),
     Consumable('Pierre de rappel','flee','0', 'Rare', 'Permet de fuir un combat.'),
 ]
+HIGH_TIER_POTIONS = [
+    Consumable('Panacée souveraine', 'heal_ultra', 120, 'Épique', 'Rend 120 PV. Très coûteuse.'),
+    Consumable('Tonique du colosse', 'buff_atk_ultra', 8, 'Légendaire', 'ATK +8 (4 tours). Très rare.'),
+    Consumable('Poudre philosophale', 'summon_full_heal', 1, 'Légendaire', 'Rend tous les PV de votre invocation active.'),
+]
+GEM_FRAGMENT_POOL = [
+    Consumable('Éclat de grenat', 'frag_atk_pct', (0.06, 2), 'Commun', '+6% ATK pour les 2 prochains combats.'),
+    Consumable('Éclat de quartz', 'frag_def_pct', (0.06, 2), 'Commun', '-6% dégâts subis pour les 2 prochains combats.'),
+    Consumable('Éclat d\'opale', 'frag_spell_pct', (0.08, 2), 'Commun', '+8% dégâts de sorts pour les 2 prochains combats.'),
+    Consumable('Éclat de perle', 'frag_crit_flat', (0.01, 1), 'Commun', '+0.01 CRIT pour le prochain combat.'),
+    Consumable('Fragment de rubis', 'frag_atk_pct', (0.12, 3), 'Rare', '+12% ATK pour les 3 prochains combats.'),
+    Consumable('Fragment de saphir', 'frag_def_pct', (0.12, 3), 'Rare', '-12% dégâts subis pour les 3 prochains combats.'),
+    Consumable('Fragment d\'améthyste', 'frag_spell_pct', (0.15, 3), 'Épique', '+15% dégâts de sorts pour les 3 prochains combats.'),
+    Consumable('Fragment de diamant', 'frag_crit_flat', (0.03, 2), 'Épique', '+0.03 CRIT pour les 2 prochains combats.'),
+]
 
 RARITY_WEIGHTS_BASE = BALANCE.get('rarity_base_weights', {'Commun':72,'Rare':10,'Épique':4,'Légendaire':0.5,'Étrange':8}).copy()
 RARITY_ORDER = ['Commun','Rare','Épique','Légendaire','Étrange']
@@ -673,6 +787,7 @@ STAT_COLORS = {
     'ATK':  Ansi.BRIGHT_RED,
     'DEF':  Ansi.BRIGHT_CYAN,
     'CRIT': Ansi.BRIGHT_MAGENTA,
+    'POUV': Ansi.BRIGHT_BLUE,
     'XP':   Ansi.BRIGHT_YELLOW,
     'OR':   Ansi.YELLOW,
 }
@@ -682,6 +797,33 @@ def color_label(name):
 
 def color_val(name, text):
     return c(str(text), STAT_COLORS.get(name, Ansi.WHITE))
+
+def is_magic_item(it):
+    return isinstance(it, Item) and bool(getattr(it, 'special', None)) and any(str(k).startswith('spell_') or k == 'pouv' for k in it.special.keys())
+
+def item_pouv(it):
+    if not isinstance(it, Item) or not getattr(it, 'special', None):
+        return 0
+    return int(it.special.get('pouv', 0))
+
+def consumable_display_color(cns):
+    if not isinstance(cns, Consumable):
+        return Ansi.WHITE
+    eff = str(getattr(cns, 'effect', ''))
+    if not eff.startswith('frag_'):
+        return Ansi.WHITE
+    name = str(getattr(cns, 'name', '')).lower()
+    if ('rubis' in name) or ('grenat' in name):
+        return Ansi.BRIGHT_RED
+    if ('saphir' in name) or ('quartz' in name):
+        return Ansi.BRIGHT_CYAN
+    if 'améthyste' in name:
+        return Ansi.BRIGHT_MAGENTA
+    if 'opale' in name:
+        return Ansi.BRIGHT_YELLOW
+    if ('diamant' in name) or ('perle' in name):
+        return Ansi.BRIGHT_WHITE
+    return Ansi.BRIGHT_BLUE
 
 def color_delta(n):
     """+X en vert, -X en rouge, 0 en gris"""
@@ -733,12 +875,23 @@ class Player(Character):
         self.quests_active=[]; self.quests_done=[]
         # Boutique: 1 accès gratuit par étage + 1 accès bonus possible (payant)
         self.shop_access_count={}
+        self.sage_access_count={}
         self.blessings_count = 0
         self.curses_count = 0
         self.normal_keys = 1
         self.boss_keys = 0
         self.altar_history = []
         self.passive_specials = {}
+        self.floor_specials = {}
+        self.next_combat_buffs = {'atk_pct': 0.0, 'def_pct': 0.0, 'spell_pct': 0.0, 'crit_flat': 0.0, 'fights_left': 0}
+        self.summon = None
+        self.summon_spell_cds = {}
+        self.active_explore_spells = {}
+        self.teleport_spell_cd = 0
+        self.spellbook_unlocked = False
+        self.spell_scrolls = []
+        self.spells_cast_this_floor = 0
+        self.sage_depths_visited = set()
     def equip(self,item):
         slot=item.slot; old=self.equipment.get(slot)
         if old: self._apply_modifiers(old,remove=True); self.inventory.append(old)
@@ -754,25 +907,55 @@ class Player(Character):
         specs={}
         for k,v in self.passive_specials.items():
             specs[k] = specs.get(k, 0) + v if isinstance(v, (int, float)) else v
+        for k,v in self.floor_specials.items():
+            specs[k] = specs.get(k, 0) + v if isinstance(v, (int, float)) else v
         for it in self.equipment.values():
             if it and it.special:
                 for k,v in it.special.items():
                     if isinstance(v,(int,float)): specs[k]=specs.get(k,0)+v
                     else: specs[k]=True
         return specs
+
+    def reset_floor_magic(self):
+        self.spells_cast_this_floor = 0
+        if self.teleport_spell_cd > 0:
+            self.teleport_spell_cd -= 1
+        if self.summon_spell_cds:
+            for sid in list(self.summon_spell_cds.keys()):
+                rem = int(self.summon_spell_cds.get(sid, 0)) - 1
+                if rem > 0:
+                    self.summon_spell_cds[sid] = rem
+                else:
+                    self.summon_spell_cds.pop(sid, None)
+        if self.active_explore_spells:
+            for sid in list(self.active_explore_spells.keys()):
+                rem = int(self.active_explore_spells.get(sid, 0)) - 1
+                if rem > 0:
+                    self.active_explore_spells[sid] = rem
+                else:
+                    self.active_explore_spells.pop(sid, None)
+        _rebuild_floor_magic_from_active_spells(self)
+
+    def can_cast_spell(self):
+        return self.spellbook_unlocked and _spell_casts_left(self) > 0
     
     def stats_summary(self):
+        sm = _active_summon(self)
+        summon_txt = "Invocation:—"
+        if sm:
+            summon_txt = f"Invocation:{sm.get('name','?')} {sm.get('hp',0)}/{sm.get('max_hp',0)}"
         parts = [
             f"Niv:{self.level}",
             f"{color_label('HP')}:{hp_gauge_text(self.hp, self.max_hp)}",
             f"{color_label('ATK')}:{color_val('ATK', self.atk + self.temp_buffs['atk'])}",
             f"{color_label('DEF')}:{color_val('DEF', self.defense)}",
             f"{color_label('CRIT')}:{color_val('CRIT', f'{self.crit:.2f}')}",
+            f"{color_label('POUV')}:{color_val('POUV', _spell_pouv(self))}",
             f"{color_label('OR')}:{color_val('OR', self.gold)}",
             f"{color_label('XP')}:{color_val('XP', f'{self.xp}/30')}",
             f"Clés N/B:{self.normal_keys}/{self.boss_keys}",
-            f"Bénédictions:{self.blessings_count}",
-            f"Malédictions:{self.curses_count}",
+            f"Sorts étage:{_spell_casts_left(self)}/{_spell_cast_limit(self)}",
+            summon_txt,
         ]
         line1 = "  ".join(parts)
         return line1
@@ -804,7 +987,14 @@ MONSTER_DEFS = [
 ]
 
 # ========================== UTILITAIRES ==========================
-def clear_screen(): os.system('cls' if os.name=='nt' else 'clear')
+def clear_screen():
+    # Évite le clipping/flicker causé par `cls`/`clear` en sous-processus.
+    # Avec ANSI, on repositionne le curseur puis on efface le buffer écran.
+    if SUPPORTS_ANSI:
+        sys.stdout.write("\x1b[H\x1b[2J\x1b[3J")
+        sys.stdout.flush()
+        return
+    os.system('cls' if os.name=='nt' else 'clear')
 
 def pause(msg='Appuyez sur Entrée pour continuer...'): input(msg)
 
@@ -816,6 +1006,11 @@ def rarity_color(r):
         'Légendaire': Ansi.BRIGHT_YELLOW,
         'Étrange': Ansi.BRIGHT_GREEN,
     }.get(r, Ansi.WHITE)
+
+def item_display_color(it):
+    if is_magic_item(it):
+        return Ansi.BRIGHT_BLUE
+    return rarity_color(getattr(it, 'rarity', 'Commun'))
 
 # ========================== SCALING ==========================
 def _scaled_fraction(base, lvl, per_lvl, softcap_lvl, soft_mult):
@@ -887,6 +1082,129 @@ def _scaled_rarity_weights(depth, base_weights, depth_gain, min_depths):
             w[rar] = 0.0
     return w
 
+def _spell_by_id(sid):
+    return SPELLS_BY_ID.get(sid)
+
+def _is_summon_spell_sid(sid):
+    return sid in ('summon_slime', 'summon_skeleton', 'summon_dragon')
+
+def _summon_spell_cooldown_total():
+    return max(1, int(BALANCE.get('summon_spell_cooldown_floors', 5)))
+
+def _summon_spell_cd_left(player, sid):
+    if not _is_summon_spell_sid(sid):
+        return 0
+    return max(0, int(getattr(player, 'summon_spell_cds', {}).get(sid, 0)))
+
+def _spell_cast_limit(player):
+    specs = player.all_specials()
+    base = 1 + player.level // 4
+    bonus = int(specs.get('spell_slots', 0))
+    return max(1, base + bonus)
+
+def _spell_casts_left(player):
+    return max(0, _spell_cast_limit(player) - player.spells_cast_this_floor)
+
+def _spell_pouv(player):
+    return max(0, int(player.all_specials().get('pouv', 0)))
+
+def _explore_spell_duration(player):
+    # Base 1 étage, puis +1 tous les 2 points de POUV (cap pour éviter l'abus).
+    return max(1, min(5, 1 + (_spell_pouv(player) // 2)))
+
+def _teleport_cooldown_duration(player):
+    # Base 3 étages, réduit par la POUV (min 1).
+    return max(1, 3 - (_spell_pouv(player) // 3))
+
+def _pick_teleport_destination(floor, player_pos):
+    if not floor or not getattr(floor, 'down', None):
+        return None
+    sx, sy = floor.down
+    candidates = []
+    blocked = set(getattr(floor, 'monsters', set()))
+    for dx, dy in ((1,0), (-1,0), (0,1), (0,-1)):
+        nx, ny = sx + dx, sy + dy
+        if not (0 <= nx < MAP_W and 0 <= ny < MAP_H):
+            continue
+        if floor.grid[ny][nx] != FLOOR:
+            continue
+        if (nx, ny) in blocked:
+            continue
+        candidates.append((nx, ny))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda p: abs(p[0] - player_pos[0]) + abs(p[1] - player_pos[1]))
+    return candidates[0]
+
+def _apply_explore_spell_specials(player, sid):
+    sp = _spell_by_id(sid)
+    if not sp or sp.kind != 'explore':
+        return
+    if sid == 'clairvoyance':
+        bonus = int(round(sp.power * _spell_power_mult(player)))
+        player.floor_specials['fov_bonus'] = max(player.floor_specials.get('fov_bonus', 0), max(0, bonus))
+    elif sid in ('arcane_skin', 'warding_mist'):
+        bonus = max(1, int(round(sp.power * _spell_power_mult(player))))
+        player.floor_specials['spell_defense'] = max(player.floor_specials.get('spell_defense', 0), max(0, bonus))
+    elif sid == 'focus_sigil':
+        player.floor_specials['spell_crit'] = max(player.floor_specials.get('spell_crit', 0.0), 0.01)
+        player.floor_specials['spell_power'] = max(player.floor_specials.get('spell_power', 0.0), 0.10)
+
+def _rebuild_floor_magic_from_active_spells(player):
+    player.floor_specials = {}
+    for sid, rem in player.active_explore_spells.items():
+        if int(rem) > 0:
+            _apply_explore_spell_specials(player, sid)
+
+def _spell_power_mult(player):
+    specs = player.all_specials()
+    pouv = _spell_pouv(player)
+    lvl = max(0, player.level - 1)
+    # La magie scale surtout sur POUV, avec un léger bonus du niveau.
+    return 1.0 + (pouv * 0.08) + (lvl * 0.006) + max(0.0, float(specs.get('spell_power', 0.0)))
+
+def _spell_scroll_price(spell, depth):
+    base = {'Commun': 95, 'Rare': 180, 'Épique': 320, 'Légendaire': 560}.get(spell.rarity, 220)
+    return int((base + depth * 10) * BALANCE.get('spell_shop_price_mult', 1.0))
+
+def _pick_spell_ids(depth, known_ids, count=1, source='loot'):
+    known_ids = set(known_ids or [])
+    candidates = [sp for sp in SPELLS if sp.sid not in known_ids]
+    if not candidates:
+        candidates = SPELLS[:]
+    if source == 'sage':
+        weights = {'Commun': 40, 'Rare': 40, 'Épique': 17, 'Légendaire': 3}
+        if depth >= 10:
+            weights = {'Commun': 18, 'Rare': 42, 'Épique': 30, 'Légendaire': 10}
+    elif source == 'shop':
+        weights = {'Commun': 20, 'Rare': 42, 'Épique': 30, 'Légendaire': 8}
+    else:
+        weights = {'Commun': 58, 'Rare': 30, 'Épique': 10, 'Légendaire': 2}
+        if depth >= 12:
+            weights = {'Commun': 32, 'Rare': 36, 'Épique': 22, 'Légendaire': 10}
+    picked = []
+    pool = candidates[:]
+    summon_weight_mult = {
+        'summon_slime': 0.45,
+        'summon_skeleton': 0.28,
+        'summon_dragon': 0.12,
+    }
+    for _ in range(min(count, len(pool))):
+        total = sum(weights.get(sp.rarity, 1) * summon_weight_mult.get(sp.sid, 1.0) for sp in pool)
+        r = random.uniform(0, total)
+        acc = 0.0
+        chosen = pool[0]
+        for sp in pool:
+            acc += weights.get(sp.rarity, 1) * summon_weight_mult.get(sp.sid, 1.0)
+            if r <= acc:
+                chosen = sp
+                break
+        picked.append(chosen.sid)
+        pool = [sp for sp in pool if sp.sid != chosen.sid]
+        if not pool:
+            break
+    return picked
+
 def weighted_choice_by_rarity(depth, unlucky):
     w = _scaled_rarity_weights(
         depth,
@@ -956,7 +1274,140 @@ def random_boss_item(depth, player):
         return random_item(depth, player)
     return random.choice(pool)
 
-def random_consumable(): return random.choice(CONSUMABLE_POOL)
+def random_consumable(depth=0, source='loot'):
+    pool = CONSUMABLE_POOL[:]
+    weights = [24 if c.rarity == 'Commun' else 11 for c in pool]
+    if depth >= 10:
+        potion_w = 2 if source == 'loot' else 4
+        fragment_w = 2 if source == 'loot' else 3
+        for hp in HIGH_TIER_POTIONS:
+            pool.append(hp)
+            if hp.effect == 'summon_full_heal':
+                weights.append(1 if source == 'loot' else 2)
+            else:
+                weights.append(potion_w)
+        for fr in GEM_FRAGMENT_POOL:
+            pool.append(fr)
+            if fr.rarity == 'Commun':
+                weights.append(fragment_w + 2)
+            elif fr.rarity == 'Rare':
+                weights.append(fragment_w)
+            else:
+                weights.append(max(1, fragment_w - 1))
+    return random.choices(pool, weights=weights, k=1)[0]
+
+def _clean_dead_summon(player):
+    sm = getattr(player, 'summon', None)
+    if isinstance(sm, dict) and int(sm.get('hp', 0)) <= 0:
+        player.summon = None
+
+def _active_summon(player):
+    _clean_dead_summon(player)
+    sm = getattr(player, 'summon', None)
+    if not isinstance(sm, dict):
+        return None
+    if int(sm.get('hp', 0)) <= 0:
+        return None
+    return sm
+
+def _summon_from_spell(player, sid):
+    summon_id = {'summon_slime': 'slime', 'summon_skeleton': 'skeleton', 'summon_dragon': 'dragon'}.get(sid)
+    if not summon_id:
+        return None
+    mdef = next((m for m in MONSTER_DEFS if m['id'] == summon_id), None)
+    if not mdef:
+        return None
+    pouv = max(0, _spell_pouv(player))
+    base_hp = int(mdef['hp'] * 0.55)
+    base_atk = int(mdef['atk'] * 0.55)
+    base_def = int(mdef['def'] * 0.55)
+    max_hp = max(8, base_hp + 6 + int(pouv * 4.0))
+    atk = max(1, base_atk + 1 + int(pouv * 0.8))
+    defense = max(0, base_def + int(pouv * 0.45))
+    return {
+        'id': summon_id,
+        'name': mdef['name'],
+        'sprite': mdef['sprite'],
+        'hp': max_hp,
+        'max_hp': max_hp,
+        'atk': atk,
+        'defense': defense,
+        'crit': max(0.0, min(0.35, 0.03 + pouv * 0.005)),
+        'source_sid': sid,
+    }
+
+def _active_next_combat_buffs(player):
+    raw = getattr(player, 'next_combat_buffs', {}) or {}
+    fights_left = max(0, int(raw.get('fights_left', 0)))
+    if fights_left <= 0:
+        return {'atk_pct': 0.0, 'def_pct': 0.0, 'spell_pct': 0.0, 'crit_flat': 0.0, 'fights_left': 0}
+    return {
+        'atk_pct': max(0.0, float(raw.get('atk_pct', 0.0))),
+        'def_pct': max(0.0, float(raw.get('def_pct', 0.0))),
+        'spell_pct': max(0.0, float(raw.get('spell_pct', 0.0))),
+        'crit_flat': max(0.0, float(raw.get('crit_flat', 0.0))),
+        'fights_left': fights_left,
+    }
+
+def _grant_next_combat_buff(player, key, amount, fights=3):
+    buffs = _active_next_combat_buffs(player)
+    caps = {'atk_pct': 0.60, 'def_pct': 0.55, 'spell_pct': 0.70, 'crit_flat': 0.20}
+    cur = float(buffs.get(key, 0.0))
+    buffs[key] = min(caps.get(key, 0.50), cur + max(0.0, float(amount)))
+    buffs['fights_left'] = max(int(buffs.get('fights_left', 0)), max(1, int(fights)))
+    player.next_combat_buffs = buffs
+
+def _consume_next_combat_charge(player):
+    buffs = _active_next_combat_buffs(player)
+    if buffs.get('fights_left', 0) <= 0:
+        player.next_combat_buffs = {'atk_pct': 0.0, 'def_pct': 0.0, 'spell_pct': 0.0, 'crit_flat': 0.0, 'fights_left': 0}
+        return
+    buffs['fights_left'] -= 1
+    if buffs['fights_left'] <= 0:
+        buffs = {'atk_pct': 0.0, 'def_pct': 0.0, 'spell_pct': 0.0, 'crit_flat': 0.0, 'fights_left': 0}
+    player.next_combat_buffs = buffs
+
+def _apply_consumable_effect(player, cns, in_combat=False):
+    if cns.effect in ('heal', 'heal_ultra'):
+        amount = int(cns.power)
+        player.heal(amount)
+        return 'used', c(f"+{amount} PV", Ansi.GREEN)
+    if cns.effect == 'buff_atk':
+        player.temp_buffs['atk'] += int(cns.power)
+        player.temp_buffs['turns'] = max(player.temp_buffs['turns'], 3)
+        return 'used', c(f"ATK +{int(cns.power)} (3 tours)", Ansi.RED)
+    if cns.effect == 'buff_atk_ultra':
+        player.temp_buffs['atk'] += int(cns.power)
+        player.temp_buffs['turns'] = max(player.temp_buffs['turns'], 4)
+        return 'used', c(f"ATK +{int(cns.power)} (4 tours)", Ansi.BRIGHT_RED)
+    if cns.effect in ('frag_atk_pct', 'frag_def_pct', 'frag_spell_pct', 'frag_crit_flat'):
+        if isinstance(cns.power, (tuple, list)) and len(cns.power) >= 2:
+            amount, fights = float(cns.power[0]), int(cns.power[1])
+        else:
+            amount, fights = float(cns.power), 3
+        fights_bonus = max(0, int(player.all_specials().get('frag_duration_bonus', 0)))
+        fights = max(1, fights + fights_bonus)
+        key = {
+            'frag_atk_pct': 'atk_pct',
+            'frag_def_pct': 'def_pct',
+            'frag_spell_pct': 'spell_pct',
+            'frag_crit_flat': 'crit_flat',
+        }[cns.effect]
+        _grant_next_combat_buff(player, key, amount, fights=fights)
+        buffs = _active_next_combat_buffs(player)
+        pct = f"{amount*100:.0f}%" if 'pct' in cns.effect else f"{amount:.2f}"
+        return 'used', c(f"{cns.name}: bonus {pct} actif ({buffs['fights_left']} combats restants).", Ansi.BRIGHT_MAGENTA)
+    if cns.effect == 'summon_full_heal':
+        sm = _active_summon(player)
+        if not sm:
+            return 'blocked', "Aucune invocation active à soigner."
+        sm['hp'] = int(sm.get('max_hp', sm.get('hp', 1)))
+        return 'used', c(f"{cns.name}: {sm.get('name', 'Invocation')} est entièrement régénérée.", Ansi.BRIGHT_MAGENTA)
+    if cns.effect == 'flee':
+        if not in_combat:
+            return 'blocked', "La pierre de rappel n’a d’effet qu’en combat."
+        return 'fled', "Vous utilisez une pierre de rappel : fuite réussie !"
+    return 'blocked', "Consommable utilisé."
 
 def _special_price_score(special):
     if not special:
@@ -981,6 +1432,16 @@ def _special_price_score(special):
             score += 0.8 * v
         elif k == 'special_dmg_mult' and isinstance(v, (int, float)):
             score += 18.0 * max(0.0, v - 1.0)
+        elif k == 'spell_power' and isinstance(v, (int, float)):
+            score += 80.0 * v
+        elif k == 'pouv' and isinstance(v, (int, float)):
+            score += 12.0 * v
+        elif k == 'spell_slots' and isinstance(v, (int, float)):
+            score += 14.0 * v
+        elif k == 'spell_damage' and isinstance(v, (int, float)):
+            score += 3.0 * v
+        elif k == 'spell_defense' and isinstance(v, (int, float)):
+            score += 2.4 * v
         elif k == 'vampirism' and isinstance(v, (int, float)):
             score += 1.8 * v
         elif k == 'unlucky' and isinstance(v, (int, float)):
@@ -997,6 +1458,17 @@ def _special_price_score(special):
 
 def price_of(it):
     if isinstance(it, Consumable):
+        premium = {
+            'heal_ultra': 180,
+            'buff_atk_ultra': 240,
+            'summon_full_heal': 260,
+            'frag_atk_pct': 140,
+            'frag_def_pct': 140,
+            'frag_spell_pct': 170,
+            'frag_crit_flat': 165,
+        }
+        if it.effect in premium:
+            return premium[it.effect]
         return {
             'Commun': 12,
             'Rare': 32,
@@ -1101,6 +1573,7 @@ def open_casino(player, depth):
     BOX_W = max(140, MAP_W + 44)
     gamble_cost = BALANCE['casino_gamble_cost_base'] + depth * 2
     upgrade_cost = BALANCE['casino_upgrade_cost_base'] + player.level * 5
+    upgrade_break_chance = max(0.0, min(0.50, float(BALANCE.get('casino_upgrade_break_chance', 0.02))))
     while True:
         equipped = [(slot, it) for slot, it in player.equipment.items() if it]
 
@@ -1110,6 +1583,7 @@ def open_casino(player, depth):
             "",
             f"1) Miser {gamble_cost} or pour un item aléatoire",
             f"2) Upgrader un objet équipé ({upgrade_cost} or)",
+            f"   Risque de casse: {upgrade_break_chance*100:.1f}%",
             "q) Quitter",
         ]
 
@@ -1159,6 +1633,11 @@ def open_casino(player, depth):
             slot, old = equipped[idx]
             player.gold -= upgrade_cost
             player._apply_modifiers(old, remove=True)
+            if random.random() < upgrade_break_chance:
+                player.equipment[slot] = None
+                draw_box("Upgrade raté", [f"{old.name} se brise pendant l'amélioration.", "Le risque du casino..."], width=BOX_W)
+                pause()
+                continue
             new_item = upgrade_item(old)
             player.equipment[slot] = new_item
             player._apply_modifiers(new_item, remove=False)
@@ -1168,14 +1647,65 @@ def open_casino(player, depth):
         print("Commande inconnue."); time.sleep(0.6)
 
 def open_altar(player, depth):
+    blessing_labels = {
+        "vitalite": "Vitalité antique",
+        "puissance": "Puissance martiale",
+        "rempart": "Rempart sacré",
+        "precision": "Précision funeste",
+        "clairvoyance": "Clairvoyance",
+        "vigueur": "Vigueur du roc",
+        "duelliste": "Voie du duelliste",
+        "prosperite": "Prospérité dorée",
+        "canalisation": "Canalisation arcanique",
+        "gemmologie": "Gemmologie",
+    }
+    pact_labels = {
+        "verre": "Pacte de verre",
+        "acier": "Pacte d'acier",
+        "ombre": "Pacte d'ombre",
+        "avidite": "Pacte d'avidité",
+        "sang": "Pacte de sang",
+        "ruine": "Pacte de ruine",
+        "arcanique": "Pacte arcanique",
+    }
+
+    def _roll_altar_option():
+        kind = random.choice(["blessing", "curse"])
+        if kind == "blessing":
+            blessing = random.choice(list(blessing_labels.keys()))
+            return {
+                "kind": "blessing",
+                "blessing": blessing,
+                "name": f"Bénédiction — {blessing_labels.get(blessing, blessing)}",
+            }
+        tier = random.choices(
+            population=["moderee", "forte", "brutale"],
+            weights=[45, 40, 15],
+            k=1,
+        )[0]
+        pact = random.choice(list(pact_labels.keys()))
+        return {
+            "kind": "curse",
+            "pact": pact,
+            "tier": tier,
+            "name": f"Malédiction — {pact_labels.get(pact, pact)} ({tier})",
+        }
+
+    altar_options = [_roll_altar_option(), _roll_altar_option()]
     rows = [
         "L'autel pulse d'une énergie instable.",
-        "1) Bénédiction (bonus sûrs, en % sur vos stats)",
-        "2) Malédiction (gros bonus + contre-coup en %)",
+        "Deux révélations s'offrent à vous.",
+        f"1) {altar_options[0]['name']}",
+        f"2) {altar_options[1]['name']}",
         "q) Ignorer",
     ]
     draw_box("Sanctuaire ancien", rows, width=88)
     cmd = input("> ").strip().lower()
+    if cmd in ("q", ""):
+        return False
+    if cmd not in ("1", "2"):
+        print("Choix invalide."); time.sleep(0.6)
+        return False
 
     def _gain_int_pct(attr, pct, min_gain=1, floor_value=0):
         base = max(floor_value, int(round(getattr(player, attr))))
@@ -1207,11 +1737,26 @@ def open_altar(player, depth):
         player.crit = new_crit
         return real_loss, base
 
-    if cmd == "1":
-        blessing = random.choice([
-            "vitalite", "puissance", "rempart", "precision",
-            "clairvoyance", "vigueur", "duelliste", "prosperite"
-        ])
+    def _gain_special_int_pct(key, pct, min_gain=1):
+        base = max(0, int(round(player.all_specials().get(key, 0))))
+        delta = max(min_gain, int(round(base * pct)))
+        player.passive_specials[key] = int(player.passive_specials.get(key, 0)) + delta
+        return delta, base
+
+    def _lose_special_int_pct(key, pct, min_loss=1):
+        base = max(0, int(round(player.all_specials().get(key, 0))))
+        if base <= 0:
+            return 0, 0
+        delta = max(min_loss, int(round(base * pct)))
+        real_loss = min(base, delta)
+        player.passive_specials[key] = int(player.passive_specials.get(key, 0)) - real_loss
+        return real_loss, base
+
+    selected_option = altar_options[int(cmd) - 1]
+    selected_kind = selected_option["kind"]
+
+    if selected_kind == "blessing":
+        blessing = selected_option["blessing"]
         if blessing == "vitalite":
             hp_gain, hp_base = _gain_int_pct("max_hp", 0.10, min_gain=3, floor_value=8)
             player.hp = min(player.max_hp, player.hp + hp_gain)
@@ -1238,6 +1783,13 @@ def open_altar(player, depth):
             atk_gain, atk_base = _gain_int_pct("atk", 0.08, min_gain=1, floor_value=1)
             crit_gain, crit_base = _gain_crit_pct(0.22, min_gain=0.01)
             msg = f"+{atk_gain} ATK (+8% de {atk_base}), +{crit_gain:.2f} CRIT (+22% de {crit_base:.2f})"
+        elif blessing == "canalisation":
+            pouv_gain, pouv_base = _gain_special_int_pct("pouv", 0.35, min_gain=1)
+            msg = f"+{pouv_gain} POUV (+35% de {pouv_base})"
+        elif blessing == "gemmologie":
+            bonus = 1
+            player.passive_specials['frag_duration_bonus'] = int(player.passive_specials.get('frag_duration_bonus', 0)) + bonus
+            msg = f"+{bonus} combat de durée pour tous les fragments"
         else:  # prosperite
             gold_gain = int(35 + depth * 12)
             player.gold += gold_gain
@@ -1245,20 +1797,16 @@ def open_altar(player, depth):
             msg = f"+{gold_gain} or, +{atk_gain} ATK (+6% de {atk_base})"
         player.blessings_count += 1
         player.altar_history.append(f"Étage {depth} — Bénédiction: {msg}")
-        draw_box("Bénédiction", [msg], width=70)
+        draw_box("Bénédiction", [f"Révélation: {blessing_labels.get(blessing, blessing)}", msg], width=84)
         pause()
         return True
-    if cmd == "2":
-        # Intensité aléatoire: parfois très punitive, parfois "gérable"
-        tier = random.choices(
-            population=["moderee", "forte", "brutale"],
-            weights=[45, 40, 15],
-            k=1,
-        )[0]
+    if selected_kind == "curse":
+        # Intensité figée lors de la révélation des choix.
+        tier = selected_option["tier"]
         mult = {"moderee": 0.85, "forte": 1.00, "brutale": 1.25}[tier]
 
-        pact = random.choice(["verre", "acier", "ombre", "avidite", "sang", "ruine"])
-        reward_lines = [f"Pacte {tier}: puissance accrue, prix à payer."]
+        pact = selected_option["pact"]
+        reward_lines = [f"Révélation: {pact_labels.get(pact, pact)} ({tier})", "Puissance accrue, prix à payer."]
 
         if pact == "verre":
             atk_gain, atk_base = _gain_int_pct("atk", 0.22 * mult, min_gain=2, floor_value=1)
@@ -1270,8 +1818,10 @@ def open_altar(player, depth):
             def_gain, def_base = _gain_int_pct("defense", 0.24 * mult, min_gain=1, floor_value=0)
             atk_loss, atk_base = _lose_int_pct("atk", 0.10 * mult, min_loss=1, floor_value=1)
             crit_loss, crit_base = _lose_crit_pct(0.22 * mult, min_loss=0.01)
-            reward_lines += [f"Bonus: +{def_gain} DEF (+{int(24*mult)}% de {def_base})", f"Malus: -{atk_loss} ATK (-{int(10*mult)}% de {atk_base}), -{crit_loss:.2f} CRIT"]
-            altar_log = f"Étage {depth} — Malédiction({tier}) Pacte d'acier: +{def_gain} DEF / -{atk_loss} ATK -{crit_loss:.2f} CRIT"
+            pouv_loss, _ = _lose_special_int_pct("pouv", 0.25 * mult, min_loss=1)
+            pouv_txt = f", -{pouv_loss} POUV" if pouv_loss > 0 else ""
+            reward_lines += [f"Bonus: +{def_gain} DEF (+{int(24*mult)}% de {def_base})", f"Malus: -{atk_loss} ATK (-{int(10*mult)}% de {atk_base}), -{crit_loss:.2f} CRIT{pouv_txt}"]
+            altar_log = f"Étage {depth} — Malédiction({tier}) Pacte d'acier: +{def_gain} DEF / -{atk_loss} ATK -{crit_loss:.2f} CRIT{pouv_txt}"
         elif pact == "ombre":
             crit_gain, crit_base = _gain_crit_pct(0.55 * mult, min_gain=0.01)
             fov_gain = max(1, int(round(1 * mult)))
@@ -1299,6 +1849,13 @@ def open_altar(player, depth):
             crit_loss, _ = _lose_crit_pct(0.18 * mult, min_loss=0.01)
             reward_lines += [f"Bonus: +{hp_gain} PV max (+{int(14*mult)}% de {hp_base}), vol de vie +{lifesteal_gain:.2f}", f"Malus: -{def_loss} DEF (-{int(15*mult)}% de {def_base}), -{crit_loss:.2f} CRIT"]
             altar_log = f"Étage {depth} — Malédiction({tier}) Pacte de sang: +{hp_gain} PV max, vol de vie +{lifesteal_gain:.2f} / -{def_loss} DEF -{crit_loss:.2f} CRIT"
+        elif pact == "arcanique":
+            pouv_gain, pouv_base = _gain_special_int_pct("pouv", 0.60 * mult, min_gain=1)
+            hp_loss, hp_base = _lose_int_pct("max_hp", 0.12 * mult, min_loss=3, floor_value=8)
+            def_loss, def_base = _lose_int_pct("defense", 0.10 * mult, min_loss=1, floor_value=0)
+            player.hp = min(player.hp, player.max_hp)
+            reward_lines += [f"Bonus: +{pouv_gain} POUV (+{int(60*mult)}% de {pouv_base})", f"Malus: -{hp_loss} PV max (-{int(12*mult)}% de {hp_base}), -{def_loss} DEF (-{int(10*mult)}% de {def_base})"]
+            altar_log = f"Étage {depth} — Malédiction({tier}) Pacte arcanique: +{pouv_gain} POUV / -{hp_loss} PV max -{def_loss} DEF"
         else:  # ruine
             atk_gain, atk_base = _gain_int_pct("atk", 0.18 * mult, min_gain=2, floor_value=1)
             def_gain, def_base = _gain_int_pct("defense", 0.18 * mult, min_gain=1, floor_value=0)
@@ -1326,13 +1883,17 @@ def item_summary(it):
     if isinstance(it, Consumable):
         return f"{it.name} [{it.rarity}] — {it.description}"
     slot_label = {'weapon': 'Arme', 'armor': 'Armure', 'accessory': 'Accessoire'}.get(it.slot, it.slot)
+    magic_tag = " [Magique]" if is_magic_item(it) else ""
     # stats colorées
     s_hp   = f"{color_label('HP')}+{color_val('HP', it.hp_bonus)}"
     s_atk  = f"{color_label('ATK')}+{color_val('ATK', it.atk_bonus)}"
     s_def  = f"{color_label('DEF')}+{color_val('DEF', it.def_bonus)}"
     s_crit = f"{color_label('CRIT')}+{color_val('CRIT', f'{it.crit_bonus:.2f}')}"
-    return (f"{it.name} [{slot_label}] [{it.rarity}] — {it.description} | "
-            f"{s_hp} {s_atk} {s_def} {s_crit}" + effect_str(it.special))
+    s_pouv = ""
+    if item_pouv(it):
+        s_pouv = f" {color_label('POUV')}+{color_val('POUV', item_pouv(it))}"
+    return (f"{it.name} [{slot_label}] [{it.rarity}]{magic_tag} — {it.description} | "
+            f"{s_hp} {s_atk} {s_def} {s_crit}{s_pouv}" + effect_str(it.special))
 
 def open_stats_interface(player):
     eq_items = [it for it in player.equipment.values() if it]
@@ -1347,6 +1908,7 @@ def open_stats_interface(player):
         f"ATK: {_fmt_num(player.atk)} (+temp {_fmt_num(player.temp_buffs['atk'])})",
         f"DEF: {_fmt_num(player.defense)}",
         f"CRIT: {_fmt_num(player.crit)}",
+        f"POUV: {_fmt_num(_spell_pouv(player))}",
         f"OR: {_fmt_num(player.gold)}",
         "",
         c("Répartition (total = hors équipement + équipement)", Ansi.BRIGHT_CYAN),
@@ -1364,18 +1926,69 @@ def open_stats_interface(player):
             if not it:
                 continue
             slot_name = {"weapon":"Arme","armor":"Armure","accessory":"Accessoire"}.get(slot, slot)
-            bonus = f"HP+{_fmt_num(it.hp_bonus)} ATK+{_fmt_num(it.atk_bonus)} DEF+{_fmt_num(it.def_bonus)} CRIT+{_fmt_num(it.crit_bonus)}"
+            bonus = f"HP+{_fmt_num(it.hp_bonus)} ATK+{_fmt_num(it.atk_bonus)} DEF+{_fmt_num(it.def_bonus)} CRIT+{_fmt_num(it.crit_bonus)} POUV+{_fmt_num(item_pouv(it))}"
             line = f"- {slot_name}: {it.name} [{it.rarity}] | {bonus}"
-            equip_rows.append(c(line, rarity_color(it.rarity)))
+            equip_rows.append(c(line, item_display_color(it)))
             if it.special:
                 equip_rows.append(f"  Effets: {effect_str(it.special).replace(' | Effets: ','')}")
 
     altar_rows = [c("Historique des autels", Ansi.BRIGHT_YELLOW)]
+    altar_rows.append(f"Bénédictions: {player.blessings_count}  |  Malédictions: {player.curses_count}")
+    altar_rows.append("")
     if not player.altar_history:
         altar_rows.append(c("(Aucun effet d'autel appliqué)", Ansi.BRIGHT_BLACK))
     else:
         for i, entry in enumerate(player.altar_history, 1):
             altar_rows.append(f"{i:>2}) {entry}")
+
+    magic_rows = [c("Magie & Grimoire", Ansi.BRIGHT_CYAN)]
+    if not player.spellbook_unlocked:
+        magic_rows.append("Grimoire: verrouillé")
+    else:
+        magic_rows.append("Grimoire: débloqué")
+        magic_rows.append(f"Parchemins en poche: {len(player.spell_scrolls)}")
+        magic_rows.append(f"Lancers restants cet étage: {_spell_casts_left(player)}/{_spell_cast_limit(player)}")
+        magic_rows.append(f"Recharge translocation: {player.teleport_spell_cd}/{_teleport_cooldown_duration(player)} étage(s)")
+        sm = _active_summon(player)
+        if sm:
+            magic_rows.append(f"Invocation active: {sm.get('name', '?')} ({sm.get('hp', 0)}/{sm.get('max_hp', 0)} PV)")
+        else:
+            magic_rows.append("Invocation active: aucune")
+        summon_cds = sorted((getattr(player, 'summon_spell_cds', {}) or {}).items())
+        summon_cds = [(sid, int(rem)) for sid, rem in summon_cds if int(rem) > 0]
+        if summon_cds:
+            names = []
+            for sid, rem in summon_cds:
+                sp = _spell_by_id(sid)
+                names.append(f"{sp.name if sp else sid}: {rem}")
+            magic_rows.append("Cooldown invocations: " + ", ".join(names))
+        else:
+            magic_rows.append("Cooldown invocations: aucun")
+        active_spells = []
+        for sid, rem in sorted(player.active_explore_spells.items()):
+            if int(rem) <= 0:
+                continue
+            sp = _spell_by_id(sid)
+            active_spells.append(f"{sp.name if sp else sid}: {int(rem)} étage(s)")
+        if active_spells:
+            magic_rows.append("Sorts d'exploration actifs:")
+            for line in active_spells:
+                magic_rows.append(f" - {line}")
+        else:
+            magic_rows.append("Sorts d'exploration actifs: aucun")
+
+    frag_rows = [c("Fragments (prochains combats)", Ansi.BRIGHT_MAGENTA)]
+    frag = _active_next_combat_buffs(player)
+    if int(frag.get('fights_left', 0)) > 0:
+        frag_rows.append(f"Durée restante: {int(frag.get('fights_left', 0))} combat(s)")
+        atk_pct = float(frag.get('atk_pct', 0.0))
+        def_pct = float(frag.get('def_pct', 0.0))
+        spell_pct = float(frag.get('spell_pct', 0.0))
+        crit_flat = float(frag.get('crit_flat', 0.0))
+        frag_rows.append(f"ATK: +{int(round(atk_pct * 100))}%  |  DEF: +{int(round(def_pct * 100))}%")
+        frag_rows.append(f"Sorts: +{int(round(spell_pct * 100))}%  |  CRIT: +{crit_flat:.2f}")
+    else:
+        frag_rows.append(c("(Aucun bonus de fragment en attente)", Ansi.BRIGHT_BLACK))
 
     spec_rows = [c("Effets passifs cumulés", Ansi.BRIGHT_GREEN)]
     specs = player.all_specials()
@@ -1390,19 +2003,23 @@ def open_stats_interface(player):
     print()
     draw_box("Stats — Équipement", equip_rows, width=max(150, MAP_W + 50))
     print()
-    draw_box("Stats — Autels & Effets", altar_rows + [""] + spec_rows, width=max(150, MAP_W + 50))
+    draw_box("Stats — Autels, Magie & Effets", altar_rows + [""] + magic_rows + [""] + frag_rows + [""] + spec_rows, width=max(150, MAP_W + 50))
     pause()
 
 def preview_delta(player, it):
     if isinstance(it, Consumable): return '(consommable)'
     cur = player.equipment.get(it.slot)
-    def tup(obj): return (0,0,0,0) if not obj else (obj.hp_bonus,obj.atk_bonus,obj.def_bonus,obj.crit_bonus)
-    dhp, datk, ddef, dcrit = tuple(a-b for a,b in zip(tup(it),tup(cur)))
+    def tup(obj):
+        if not obj:
+            return (0,0,0,0,0)
+        return (obj.hp_bonus, obj.atk_bonus, obj.def_bonus, obj.crit_bonus, item_pouv(obj))
+    dhp, datk, ddef, dcrit, dpouv = tuple(a-b for a,b in zip(tup(it),tup(cur)))
     return ("Δ "
         f"{color_label('HP')}:{color_delta(dhp)} "
         f"{color_label('ATK')}:{color_delta(datk)} "
         f"{color_label('DEF')}:{color_delta(ddef)} "
-        f"{color_label('CRIT')}:{color_delta_crit(dcrit)}")
+        f"{color_label('CRIT')}:{color_delta_crit(dcrit)} "
+        f"{color_label('POUV')}:{color_delta(dpouv)}")
 
 def open_inventory(player):
     """
@@ -1446,7 +2063,7 @@ def open_inventory(player):
                 label = item_summary(it)
                 if not isinstance(it, Consumable):
                     # colorer par rareté
-                    label = c(label, rarity_color(it.rarity))
+                    label = c(label, item_display_color(it))
                 bag_rows.append(f"{i:>2}) {label}   {preview_delta(player, it)}")
 
         bag_rows.append('')
@@ -1464,7 +2081,10 @@ def open_inventory(player):
             conso_rows.append(c('(Vide)', Ansi.BRIGHT_BLACK))
         else:
             for i, cns in enumerate(cons, 1):
-                conso_rows.append(f"{i:>2}) {item_summary(cns)}")
+                label = item_summary(cns)
+                if str(getattr(cns, 'effect', '')).startswith('frag_'):
+                    label = c(label, consumable_display_color(cns))
+                conso_rows.append(f"{i:>2}) {label}")
 
         conso_rows.append('')
         conso_rows.append(c('Actions consommables :', Ansi.BRIGHT_WHITE))
@@ -1523,16 +2143,10 @@ def open_inventory(player):
             if 0 <= idx < len(cons):
                 if cmd.startswith('uc'):
                     cns = cons.pop(idx)  # consommer tout de suite
-                    if cns.effect == 'heal':
-                        player.heal(cns.power); print(c(f"+{cns.power} PV", Ansi.GREEN))
-                    elif cns.effect == 'buff_atk':
-                        player.temp_buffs['atk'] += cns.power; player.temp_buffs['turns'] = 3
-                        print(c(f"ATK +{cns.power} (3 tours)", Ansi.RED))
-                    elif cns.effect == 'flee':
-                        # en inventaire (hors combat) : on peut choisir d'ignorer/transformer
-                        print("La pierre de rappel n’a d’effet qu’en combat."); time.sleep(0.8)
-                    else:
-                        print("Consommable utilisé."); time.sleep(0.6)
+                    status, msg = _apply_consumable_effect(player, cns, in_combat=False)
+                    if status == 'blocked':
+                        cons.insert(idx, cns)
+                    print(msg); time.sleep(0.8 if status == 'blocked' else 0.6)
                 else:  # dc<num>
                     cons.pop(idx); print("Consommable jeté."); time.sleep(0.6)
             else:
@@ -1542,30 +2156,504 @@ def open_inventory(player):
         print('Commande inconnue.'); time.sleep(0.6)
 
 
+# ========================== GRIMOIRE ==========================
+def _spell_damage_roll(player, spell_power, rand_min, rand_max, coeff=1.0):
+    pouv = _spell_pouv(player)
+    lvl = max(0, player.level - 1)
+    # Faible scaling niveau, fort scaling POUV.
+    base = spell_power + (lvl * 0.4) + (pouv * 2.0)
+    scaled = int(base * coeff * _spell_power_mult(player))
+    return max(1, scaled + random.randint(rand_min, rand_max))
+
+def _spell_heal_amount(player, spell_power, ratio=1.0):
+    pouv = _spell_pouv(player)
+    lvl = max(0, player.level - 1)
+    base = spell_power + (lvl * 0.7) + (pouv * 2.2)
+    return max(1, int(round(base * ratio * _spell_power_mult(player))))
+
+def _spell_effect_details(sp, player):
+    pouv = _spell_pouv(player)
+    lvl = max(0, player.level - 1)
+    if sp.sid == 'pulse':
+        lo = max(1, int((sp.power + lvl * 0.4 + pouv * 2.0) * 0.82 * _spell_power_mult(player)))
+        hi = lo + 2
+        return f"Combat • dégâts: {lo}-{hi} (cantrip)"
+    if sp.sid == 'spark':
+        lo = max(1, int((sp.power + lvl * 0.4 + pouv * 2.0) * 0.92 * _spell_power_mult(player)))
+        hi = lo + 3
+        return f"Combat • dégâts: {lo}-{hi} (scale: Niv léger + POUV fort)"
+    if sp.sid == 'frostbind':
+        lo = max(1, int((sp.power + lvl * 0.4 + pouv * 2.0) * 0.80 * _spell_power_mult(player)))
+        hi = lo + 3
+        weaken = max(1, int(1 + (pouv * 0.16)))
+        return f"Combat • dégâts: {lo}-{hi} • -{weaken} ATK ennemi (2 tours)"
+    if sp.sid == 'arcbolt':
+        lo = max(1, int((sp.power + lvl * 0.4 + pouv * 2.0) * 1.05 * _spell_power_mult(player)))
+        hi = lo + 6
+        return f"Combat • dégâts: {lo}-{hi} (variance élevée)"
+    if sp.sid == 'siphon':
+        lo = max(1, int((sp.power + lvl * 0.4 + pouv * 2.0) * 0.90 * _spell_power_mult(player)))
+        hi = lo + 4
+        return f"Combat • dégâts: {lo}-{hi} • soin: 25% des dégâts"
+    if sp.sid == 'mending':
+        heal = _spell_heal_amount(player, sp.power, ratio=0.95)
+        return f"Combat/Exploration • soin: {heal} PV • sans cooldown"
+    if sp.sid == 'greater_mending':
+        heal = _spell_heal_amount(player, sp.power, ratio=1.15)
+        return f"Combat/Exploration • soin: {heal} PV • sans cooldown"
+    if sp.sid == 'rift':
+        lo = max(1, int((sp.power + lvl * 0.4 + pouv * 2.0) * 1.18 * _spell_power_mult(player))) + 1
+        hi = lo + 5
+        return f"Combat • dégâts: {lo}-{hi} (impact)"
+    if sp.sid == 'nova':
+        lo = max(1, int((sp.power + lvl * 0.4 + pouv * 2.0) * 1.32 * _spell_power_mult(player))) + 1
+        hi = lo + 5
+        return f"Combat • dégâts: {lo}-{hi} (burst)"
+    if sp.sid == 'comet':
+        lo = max(1, int((sp.power + lvl * 0.4 + pouv * 2.0) * 1.40 * _spell_power_mult(player))) + 1
+        hi = lo + 7
+        return f"Combat • dégâts: {lo}-{hi} (burst volatil)"
+    if sp.sid in ('summon_slime', 'summon_skeleton', 'summon_dragon'):
+        sm = _active_summon(player)
+        name = {'summon_slime': 'Slime', 'summon_skeleton': 'Squelette', 'summon_dragon': 'Dragonnet'}.get(sp.sid, 'Invocation')
+        cd_left = _summon_spell_cd_left(player, sp.sid)
+        cd_total = _summon_spell_cooldown_total()
+        cd_txt = f" • recharge: {cd_left}/{cd_total} étage(s)" if cd_left > 0 else f" • recharge: {cd_total} étage(s)"
+        if sm:
+            return f"Combat/Exploration • invoque {name} (actif: {sm.get('name','?')} {sm.get('hp',0)}/{sm.get('max_hp',0)}){cd_txt}"
+        pv = max(8, int((12 + sp.power * 4) + pouv * 4.0))
+        atk = max(1, int((3 + sp.power) + pouv * 0.8))
+        return f"Combat/Exploration • invoque {name} • stats approx: {pv} PV / {atk} ATK{cd_txt}"
+    if sp.sid == 'clairvoyance':
+        bonus = int(round(sp.power * _spell_power_mult(player)))
+        return f"Exploration • vision +{bonus} ({_explore_spell_duration(player)} étage(s))"
+    if sp.sid == 'warding_mist':
+        bonus = max(1, int(round(sp.power * _spell_power_mult(player))))
+        return f"Exploration • DEF magique +{bonus} ({_explore_spell_duration(player)} étage(s))"
+    if sp.sid == 'prospection':
+        gain = int(sp.power * _spell_power_mult(player))
+        return f"Exploration • +{gain} or"
+    if sp.sid == 'gild_touch':
+        gain = int(sp.power * _spell_power_mult(player))
+        return f"Exploration • +{gain} or"
+    if sp.sid == 'arcane_skin':
+        bonus = max(1, int(round(sp.power * _spell_power_mult(player))))
+        return f"Exploration • DEF magique +{bonus} ({_explore_spell_duration(player)} étage(s))"
+    if sp.sid == 'focus_sigil':
+        return f"Exploration • CRIT +0.01 • puissance +10% ({_explore_spell_duration(player)} étage(s))"
+    if sp.sid == 'teleport':
+        cd_total = _teleport_cooldown_duration(player)
+        cd_left = int(player.teleport_spell_cd)
+        if cd_left > 0:
+            return f"Exploration • téléporte près de l'escalier bas • recharge: {cd_left}/{cd_total} étage(s)"
+        return f"Exploration • téléporte près de l'escalier bas • recharge: {cd_total} étage(s)"
+    return "Effet inconnu"
+
+def _display_spell(sp, player):
+    return f"{sp.name} [{sp.rarity}] ({sp.kind}) — {_spell_effect_details(sp, player)}"
+
+def _cast_explore_spell(player, sid, floor=None, player_pos=None):
+    sp = _spell_by_id(sid)
+    if not sp:
+        print("Parchemin introuvable."); time.sleep(0.7)
+        return player_pos, False
+    if not player.can_cast_spell():
+        print("Limite de sorts atteinte pour cet étage."); time.sleep(0.8)
+        return player_pos, False
+    if sid in ('summon_slime', 'summon_skeleton', 'summon_dragon'):
+        if _active_summon(player):
+            print("Une invocation est déjà active."); time.sleep(0.7)
+            return player_pos, False
+        cd_left = _summon_spell_cd_left(player, sid)
+        if cd_left > 0:
+            print(f"Sort d'invocation en recharge: {cd_left} étage(s) restant(s)."); time.sleep(0.8)
+            return player_pos, False
+        summon = _summon_from_spell(player, sid)
+        if not summon:
+            print("Invocation impossible."); time.sleep(0.7)
+            return player_pos, False
+        player.summon = summon
+        player.summon_spell_cds[sid] = _summon_spell_cooldown_total()
+        player.spells_cast_this_floor += 1
+        draw_box("Magie", [f"{sp.name}: {summon['name']} vous accompagne désormais ({summon['hp']} PV)."], width=96)
+        time.sleep(0.8)
+        return player_pos, True
+    if sid in ('mending', 'greater_mending'):
+        ratio = 0.95 if sid == 'mending' else 1.15
+        healed = _spell_heal_amount(player, sp.power, ratio=ratio)
+        hp_before = player.hp
+        player.heal(healed)
+        hp_real = max(0, player.hp - hp_before)
+        player.spells_cast_this_floor += 1
+        draw_box("Magie", [f"{sp.name}: +{hp_real} PV."], width=72)
+        time.sleep(0.8)
+        return player_pos, True
+    if sp.kind != 'explore':
+        print("Ce parchemin ne se lance pas hors combat."); time.sleep(0.7)
+        return player_pos, False
+    if sid == 'clairvoyance':
+        if int(player.active_explore_spells.get(sid, 0)) > 0:
+            print(f"{sp.name} est déjà actif."); time.sleep(0.7)
+            return player_pos, False
+        duration = _explore_spell_duration(player)
+        player.active_explore_spells[sid] = duration
+        _rebuild_floor_magic_from_active_spells(player)
+        bonus = int(player.floor_specials.get('fov_bonus', 0))
+        player.spells_cast_this_floor += 1
+        draw_box("Magie", [f"{sp.name} active: vision +{bonus} pendant {duration} étage(s)."], width=96)
+        time.sleep(0.8)
+        return player_pos, True
+    if sid in ('prospection', 'gild_touch'):
+        gain = int(sp.power * _spell_power_mult(player))
+        player.gold += gain
+        player.spells_cast_this_floor += 1
+        draw_box("Magie", [f"{sp.name}: +{gain} or transmuté."], width=72)
+        time.sleep(0.8)
+        return player_pos, True
+    if sid in ('arcane_skin', 'warding_mist'):
+        if int(player.active_explore_spells.get(sid, 0)) > 0:
+            print(f"{sp.name} est déjà actif."); time.sleep(0.7)
+            return player_pos, False
+        duration = _explore_spell_duration(player)
+        player.active_explore_spells[sid] = duration
+        _rebuild_floor_magic_from_active_spells(player)
+        bonus = int(player.floor_specials.get('spell_defense', 0))
+        player.spells_cast_this_floor += 1
+        draw_box("Magie", [f"{sp.name}: DEF magique +{bonus} pendant {duration} étage(s)."], width=96)
+        time.sleep(0.8)
+        return player_pos, True
+    if sid == 'focus_sigil':
+        if int(player.active_explore_spells.get(sid, 0)) > 0:
+            print(f"{sp.name} est déjà actif."); time.sleep(0.7)
+            return player_pos, False
+        duration = _explore_spell_duration(player)
+        player.active_explore_spells[sid] = duration
+        _rebuild_floor_magic_from_active_spells(player)
+        player.spells_cast_this_floor += 1
+        draw_box("Magie", [f"{sp.name}: CRIT magique +0.01 et puissance +10% pendant {duration} étage(s)."], width=112)
+        time.sleep(0.8)
+        return player_pos, True
+    if sid == 'teleport':
+        if not floor or player_pos is None:
+            print("Translocation indisponible ici."); time.sleep(0.7)
+            return player_pos, False
+        if player.teleport_spell_cd > 0:
+            print(f"Translocation en recharge: {player.teleport_spell_cd} étage(s) restant(s)."); time.sleep(0.8)
+            return player_pos, False
+        dest = _pick_teleport_destination(floor, player_pos)
+        if not dest:
+            print("Impossible de verrouiller une destination près de l'escalier."); time.sleep(0.8)
+            return player_pos, False
+        player_pos = dest
+        player.teleport_spell_cd = _teleport_cooldown_duration(player)
+        player.spells_cast_this_floor += 1
+        draw_box("Magie", [f"{sp.name}: vous êtes transloqué près de l'escalier de descente."], width=92)
+        time.sleep(0.8)
+        return player_pos, True
+    print("Ce parchemin ne se lance pas hors combat."); time.sleep(0.7)
+    return player_pos, False
+
+def open_spellbook(player, depth, floor=None, player_pos=None):
+    if not player.spellbook_unlocked:
+        draw_box("Grimoire", ["Vous ne possédez pas encore de grimoire.", "Trouvez le Sorcier pour l'obtenir."], width=82)
+        pause()
+        return player_pos
+    while True:
+        cast_cap = _spell_cast_limit(player)
+        sm = _active_summon(player)
+        summon_cds = getattr(player, 'summon_spell_cds', {}) or {}
+        summon_cd_txt = ", ".join(f"{sid}:{int(v)}" for sid, v in sorted(summon_cds.items()) if int(v) > 0)
+        rows = [
+            f"Étage {depth}  |  Lancers restants: {_spell_casts_left(player)}/{cast_cap}",
+            f"POUV total: {_spell_pouv(player)}",
+            f"Multiplicateur magique: x{_spell_power_mult(player):.2f}",
+            f"Durée sorts d'exploration: {_explore_spell_duration(player)} étage(s)",
+            f"Recharge Translocation: {player.teleport_spell_cd}/{_teleport_cooldown_duration(player)} étage(s)",
+            (f"Invocation active: {sm.get('name', 'Aucune')} ({sm.get('hp', 0)}/{sm.get('max_hp', 0)} PV)" if sm else "Invocation active: Aucune"),
+            ("Cooldown invocations: " + summon_cd_txt) if summon_cd_txt else "Cooldown invocations: aucun",
+            "",
+            c("Parchemins disponibles", Ansi.BRIGHT_CYAN),
+        ]
+        active_rows = []
+        for sid, rem in player.active_explore_spells.items():
+            if int(rem) > 0:
+                sp = _spell_by_id(sid)
+                if sp:
+                    active_rows.append(f"- {sp.name}: {rem} étage(s) restant(s)")
+        if active_rows:
+            rows += ["", c("Sorts d'exploration actifs", Ansi.BRIGHT_GREEN)]
+            rows += active_rows
+        if not player.spell_scrolls:
+            rows.append(c("(Aucun parchemin)", Ansi.BRIGHT_BLACK))
+        else:
+            for i, sid in enumerate(player.spell_scrolls, 1):
+                sp = _spell_by_id(sid)
+                if sp:
+                    rows.append(f"{i:>2}) {_display_spell(sp, player)}")
+        rows += ["", c(f"Parchemins en poche: {len(player.spell_scrolls)}", Ansi.BRIGHT_MAGENTA)]
+        rows += [
+            "",
+            "Commandes:",
+            " Lancement rapide en jeu : & é \" ' ( - (puis è _ ç à)",
+            " d<num> : jeter un parchemin",
+            " q) Retour",
+        ]
+        clear_screen()
+        draw_box("Grimoire", rows, width=max(120, MAP_W + 42))
+        cmd = input("> ").strip().lower()
+        if cmd in ("q", ""):
+            return player_pos
+        if cmd.isdigit():
+            idx = int(cmd) - 1
+            if not (0 <= idx < len(player.spell_scrolls)):
+                print("Index invalide."); time.sleep(0.6); continue
+            sid = player.spell_scrolls[idx]
+            player_pos, casted = _cast_explore_spell(player, sid, floor, player_pos)
+            if casted and sid == 'teleport':
+                return player_pos
+            continue
+        if len(cmd) > 1 and cmd[1:].isdigit() and cmd[0] in ("e", "d"):
+            idx = int(cmd[1:]) - 1
+            if not (0 <= idx < len(player.spell_scrolls)):
+                print("Index invalide."); time.sleep(0.6); continue
+            sid = player.spell_scrolls[idx]
+            sp = _spell_by_id(sid)
+            if cmd[0] == "d":
+                player.spell_scrolls.pop(idx)
+                print("Parchemin détruit."); time.sleep(0.6); continue
+            player_pos, casted = _cast_explore_spell(player, sid, floor, player_pos)
+            if casted and sid == 'teleport':
+                return player_pos
+
+def open_sage_spell_offer(player, depth):
+    def _draw_sage_dialog(title, rows, width=96, side_by_side=False):
+        clear_screen()
+        sage_sprite = [c(line, Ansi.BRIGHT_BLUE) for line in SPRITES.get('sorcier', [])]
+        if sage_sprite:
+            draw_box("Le Sorcier", sage_sprite, width=max(76, MAP_W + 8))
+            print()
+        draw_box(title, rows, width=width)
+
+    if depth in player.sage_depths_visited:
+        _draw_sage_dialog("Sorcier", ["Le Sorcier hoche la tête.", "« Nous nous reverrons plus bas. »"], width=72)
+        pause()
+        return False
+    if not player.spellbook_unlocked:
+        player.spellbook_unlocked = True
+        intro = ["Le Sorcier vous confie un Grimoire vide.", "« Nourris-le avec des parchemins. »"]
+        _draw_sage_dialog("Sorcier", intro, width=72, side_by_side=True)
+        time.sleep(0.8)
+    picks = _pick_spell_ids(depth, set(player.spell_scrolls), count=3, source='sage')
+    if not picks:
+        _draw_sage_dialog("Sorcier", ["Le Sorcier n'a plus rien à enseigner."], width=64); pause(); return False
+    rows = ["Choisissez un parchemin :"]
+    for i, sid in enumerate(picks, 1):
+        sp = _spell_by_id(sid)
+        rows.append(f"{i}) {_display_spell(sp, player)}")
+    rows.append("q) Refuser")
+    _draw_sage_dialog("Sorcier — Offrande", rows, width=max(96, MAP_W + 26), side_by_side=True)
+    cmd = input("> ").strip().lower()
+    if cmd.isdigit() and 1 <= int(cmd) <= len(picks):
+        sid = picks[int(cmd)-1]
+        sp = _spell_by_id(sid)
+        player.spell_scrolls.append(sid)
+        player.sage_depths_visited.add(depth)
+        _draw_sage_dialog("Sorcier", [f"Vous recevez le parchemin: {sp.name}."], width=70)
+        pause()
+        return True
+    else:
+        _draw_sage_dialog("Sorcier", ["Le Sorcier range lentement ses parchemins."], width=70); pause()
+        return False
+
 # ========================== COMBAT ==========================
-def _combat_panel(player, monster, mname, sprite_m, depth):
+def _combat_panel(player, monster, mname, sprite_m, depth, summon=None):
     lines=[]
     lines.append(f"{player.name} vs {mname}")
-    h = max(len(SPRITES['knight']), len(sprite_m))
-    left = SPRITES['knight'] + [' '*len(SPRITES['knight'][0])]*(h-len(SPRITES['knight']))
-    right= sprite_m + [' '*len(sprite_m[0])]*(h-len(sprite_m))
-    for la, rb in zip(left, right): lines.append(f"{la:20}    {rb}")
+    p_sprite = player.sprite if getattr(player, 'sprite', None) else SPRITES.get('knight', [])
+    p_col = colorize_sprite_by_hp(p_sprite, player.hp, player.max_hp)
+    right = sprite_m[:]
+    left = p_col[:]
+    lines.append(c("Vous", Ansi.BRIGHT_GREEN))
+
+    h = max(len(left), len(right))
+    left_w = max((visible_len(x) for x in left), default=20) + 2
+    left = left + ['' for _ in range(h-len(left))]
+    right = right + ['' for _ in range(h-len(right))]
+    for la, rb in zip(left, right):
+        lines.append(la + (' ' * max(0, left_w - visible_len(la))) + "    " + rb)
     # Affichage des PV
-    lines.append(
-        f"Vous: {hp_gauge_text(player.hp, player.max_hp)}    "
-        f"Ennemi: {hp_gauge_text(monster.hp, monster.max_hp)}")
+    if summon and int(summon.get('hp', 0)) > 0:
+        summon_name = summon.get('name', 'Invocation')
+        lines.append(
+            f"Vous: {hp_gauge_text(player.hp, player.max_hp)}  |  "
+            f"{summon_name}: {hp_gauge_text(int(summon.get('hp', 0)), int(summon.get('max_hp', 1)))}  |  "
+            f"Ennemi: {hp_gauge_text(monster.hp, monster.max_hp)}"
+        )
+    else:
+        lines.append(
+            f"Vous: {hp_gauge_text(player.hp, player.max_hp)}    "
+            f"Ennemi: {hp_gauge_text(monster.hp, monster.max_hp)}")
     lines.append('')
-    lines.append('1) Attaquer  2) Défendre  3) Consommable  4) Spéciale  5) Fuir')
+    if player.spellbook_unlocked:
+        spell_label = c(f"3) Sort ({_spell_casts_left(player)}/{_spell_cast_limit(player)})", Ansi.BRIGHT_BLUE)
+    else:
+        spell_label = c("3) Sort (verrouillé)", Ansi.BRIGHT_BLUE)
+    lines.append(
+        f"1) Attaquer  2) Spéciale  {spell_label}  4) Consommable  {c('5) Fuir', Ansi.BRIGHT_RED)}"
+    )
+    frag = _active_next_combat_buffs(player)
+    if frag.get('fights_left', 0) > 0:
+        frag_parts = []
+        if frag.get('atk_pct', 0.0) > 0: frag_parts.append(f"ATK +{int(round(frag['atk_pct']*100))}%")
+        if frag.get('def_pct', 0.0) > 0: frag_parts.append(f"DEF +{int(round(frag['def_pct']*100))}%")
+        if frag.get('spell_pct', 0.0) > 0: frag_parts.append(f"Sorts +{int(round(frag['spell_pct']*100))}%")
+        if frag.get('crit_flat', 0.0) > 0: frag_parts.append(f"CRIT +{frag['crit_flat']:.2f}")
+        if frag_parts:
+            lines.append(c(f"Fragments actifs ({frag['fights_left']} combats): " + " • ".join(frag_parts), Ansi.BRIGHT_MAGENTA))
     clear_screen(); draw_box(f"Combat — Étage {depth}", lines, width=max(MAP_W, 80))
+
+def _use_combat_consumable(player):
+    cons = player.consumables
+    if not cons:
+        print('Aucun consommable.'); time.sleep(0.6); return False
+    rows = [f"{i+1}) {item_summary(cns)}" for i, cns in enumerate(cons)]
+    rows += ["q) Retour"]
+    draw_box("Consommables", rows, width=max(96, MAP_W + 26))
+    s = input('> ').strip().lower()
+    if s in ('q', ''):
+        return False
+    if not s.isdigit():
+        print("Choix invalide."); time.sleep(0.6); return False
+    i = int(s) - 1
+    if not (0 <= i < len(cons)):
+        print("Index invalide."); time.sleep(0.6); return False
+    cns = cons[i]
+    status, msg = _apply_consumable_effect(player, cns, in_combat=True)
+    if status == 'used':
+        cons.pop(i)
+        print(msg)
+        return True
+    if status == 'fled':
+        cons.pop(i)
+        print(msg)
+        return 'fled'
+    print(msg); time.sleep(0.6)
+    return False
+
+def _cast_combat_spell(player, monster, depth, p_specs, combat_state):
+    if not player.spellbook_unlocked:
+        print("Vous n'avez pas de grimoire."); time.sleep(0.6); return False, None, None
+    if not player.can_cast_spell():
+        print("Limite de sorts atteinte pour cet étage."); time.sleep(0.7); return False, None, None
+    choices = [(i, sid) for i, sid in enumerate(player.spell_scrolls) if _spell_by_id(sid) and _spell_by_id(sid).kind == 'combat']
+    if not choices:
+        print("Aucun parchemin de combat disponible."); time.sleep(0.7); return False, None, None
+
+    rows = [f"{i+1}) {_display_spell(_spell_by_id(sid), player)}" for i, (_, sid) in enumerate(choices)]
+    rows += ["q) Annuler"]
+    draw_box("Lancer un sort", rows, width=max(96, MAP_W + 26))
+    cmd = input("> ").strip().lower()
+    if cmd in ("q", ""):
+        return False, None, None
+    if not cmd.isdigit() or not (1 <= int(cmd) <= len(choices)):
+        print("Choix invalide."); time.sleep(0.6); return False, None, None
+
+    _inv_idx, sid = choices[int(cmd)-1]
+    sp = _spell_by_id(sid)
+    bonus = int(round(float(p_specs.get('spell_damage', 0.0))))
+    spell_mult = max(0.30, float(p_specs.get('frag_spell_mult', 1.0)))
+    spell_crit_chance = max(0.0, min(0.9, player.crit * 0.65 + float(p_specs.get('spell_crit', 0.0))))
+    spell_crit = random.random() < spell_crit_chance
+
+    if sid == 'pulse':
+        dmg = int((_spell_damage_roll(player, sp.power, 0, 2, coeff=0.82) + bonus) * spell_mult)
+        if spell_crit: dmg = max(1, int(dmg * 1.65))
+        monster.take_damage(dmg)
+        print(c(f"{sp.name} inflige {dmg} dégâts.", Ansi.BRIGHT_MAGENTA))
+    elif sid == 'spark':
+        dmg = int((_spell_damage_roll(player, sp.power, 0, 3, coeff=0.92) + bonus) * spell_mult)
+        if spell_crit: dmg = max(1, int(dmg * 1.65))
+        monster.take_damage(dmg)
+        print(c(f"{sp.name} inflige {dmg} dégâts.", Ansi.BRIGHT_MAGENTA))
+    elif sid == 'frostbind':
+        dmg = int(_spell_damage_roll(player, sp.power, 0, 3, coeff=0.80) * spell_mult)
+        if spell_crit: dmg = max(1, int(dmg * 1.65))
+        monster.take_damage(dmg)
+        weaken = max(1, int(1 + (_spell_pouv(player) * 0.16)))
+        combat_state['enemy_weaken_turns'] = max(combat_state.get('enemy_weaken_turns', 0), 2)
+        combat_state['enemy_weaken_amount'] = max(combat_state.get('enemy_weaken_amount', 0), weaken)
+        print(c(f"{sp.name}: {dmg} dégâts et -{weaken} ATK ennemi (2 tours).", Ansi.BRIGHT_CYAN))
+    elif sid == 'arcbolt':
+        dmg = int((_spell_damage_roll(player, sp.power, 0, 6, coeff=1.05) + bonus) * spell_mult)
+        if spell_crit: dmg = max(1, int(dmg * 1.65))
+        monster.take_damage(dmg)
+        print(c(f"{sp.name} électrise la cible pour {dmg} dégâts.", Ansi.BRIGHT_MAGENTA))
+    elif sid == 'siphon':
+        dmg = int(_spell_damage_roll(player, sp.power, 0, 4, coeff=0.90) * spell_mult)
+        if spell_crit: dmg = max(1, int(dmg * 1.65))
+        heal = max(1, int(dmg * 0.25))
+        monster.take_damage(dmg)
+        player.heal(heal)
+        print(c(f"{sp.name}: {dmg} dégâts, +{heal} PV.", Ansi.BRIGHT_MAGENTA))
+    elif sid == 'mending':
+        heal = _spell_heal_amount(player, sp.power, ratio=0.95)
+        hp_before = player.hp
+        player.heal(heal)
+        hp_real = max(0, player.hp - hp_before)
+        print(c(f"{sp.name}: +{hp_real} PV.", Ansi.BRIGHT_CYAN))
+    elif sid == 'greater_mending':
+        heal = _spell_heal_amount(player, sp.power, ratio=1.15)
+        hp_before = player.hp
+        player.heal(heal)
+        hp_real = max(0, player.hp - hp_before)
+        print(c(f"{sp.name}: +{hp_real} PV.", Ansi.BRIGHT_CYAN))
+    elif sid == 'rift':
+        dmg = int((_spell_damage_roll(player, sp.power, 1, 5, coeff=1.18) + 1 + bonus) * spell_mult)
+        if spell_crit: dmg = max(1, int(dmg * 1.65))
+        monster.take_damage(dmg)
+        print(c(f"{sp.name} fracture l'air pour {dmg} dégâts.", Ansi.BRIGHT_MAGENTA))
+    elif sid == 'nova':
+        dmg = int((_spell_damage_roll(player, sp.power, 1, 6, coeff=1.32) + 1 + bonus) * spell_mult)
+        if spell_crit: dmg = max(1, int(dmg * 1.65))
+        monster.take_damage(dmg)
+        print(c(f"{sp.name} explose pour {dmg} dégâts !", Ansi.BRIGHT_MAGENTA))
+    elif sid == 'comet':
+        dmg = int((_spell_damage_roll(player, sp.power, 1, 7, coeff=1.40) + 1 + bonus) * spell_mult)
+        if spell_crit: dmg = max(1, int(dmg * 1.65))
+        monster.take_damage(dmg)
+        print(c(f"{sp.name} percute la cible pour {dmg} dégâts !", Ansi.BRIGHT_MAGENTA))
+    elif sid in ('summon_slime', 'summon_skeleton', 'summon_dragon'):
+        if _active_summon(player):
+            print("Une invocation est déjà active."); time.sleep(0.6); return False, None, None
+        cd_left = _summon_spell_cd_left(player, sid)
+        if cd_left > 0:
+            print(f"Sort d'invocation en recharge: {cd_left} étage(s) restant(s)."); time.sleep(0.7); return False, None, None
+        summon = _summon_from_spell(player, sid)
+        if not summon:
+            print("Invocation impossible."); time.sleep(0.6); return False, None, None
+        player.summon = summon
+        player.summon_spell_cds[sid] = _summon_spell_cooldown_total()
+        print(c(f"{sp.name}: {summon['name']} rejoint le combat ({summon['hp']} PV).", Ansi.BRIGHT_CYAN))
+        player.spells_cast_this_floor += 1
+        return True, Ansi.BRIGHT_CYAN, 'summon'
+    else:
+        print("Ce sort n'est pas utilisable en combat."); time.sleep(0.6); return False, None, None
+
+    if spell_crit:
+        print(c("Critique de sort !", Ansi.BRIGHT_MAGENTA))
+    player.spells_cast_this_floor += 1
+    return True, (Ansi.BRIGHT_MAGENTA if spell_crit else Ansi.BRIGHT_BLUE), 'damage'
 
 def compute_damage(attacker, defender, attacker_specs=None):
     attacker_specs = attacker_specs or {}
     base = max(0, attacker.atk - defender.defense)
     variance = random.randint(-2, 3)
     dmg = max(0, base + variance)
-    if random.random() < max(0.0, attacker.crit + (0.05 if attacker_specs.get('glass') else 0.0)):
+    bonus_crit = float(attacker_specs.get('bonus_crit', 0.0))
+    is_crit = random.random() < max(0.0, attacker.crit + bonus_crit + (0.05 if attacker_specs.get('glass') else 0.0))
+    if is_crit:
         dmg = max(1, int(dmg * 1.8))
-    return dmg
+    return dmg, is_crit
 
 def _try_grant_normal_key(player, depth, bonus_chance=0.0):
     key_chance = BALANCE.get('normal_key_drop_chance', 0.05) + bonus_chance + min(0.03, depth * 0.002)
@@ -1636,69 +2724,98 @@ def fight(player, depth, boss=False):
     monster = Character(mdef['name'], mdef['hp'], mdef['atk'], mdef['def'], mdef['crit'])
     monster.max_hp = mdef['hp']
     sprite_m = mdef['sprite']
+    summon = _active_summon(player)
+    frag = _active_next_combat_buffs(player)
+    frag_active = frag.get('fights_left', 0) > 0
+    frag_atk_mult = 1.0 + frag.get('atk_pct', 0.0)
+    frag_spell_mult = 1.0 + frag.get('spell_pct', 0.0)
+    frag_def_reduct = min(0.55, frag.get('def_pct', 0.0))
+    frag_crit_bonus = frag.get('crit_flat', 0.0)
+
+    def _finalize_fight():
+        if frag_active:
+            _consume_next_combat_charge(player)
+
     p_specs = player.all_specials(); poison_turns=0
+    p_specs['bonus_crit'] = float(p_specs.get('spell_crit', 0.0)) + frag_crit_bonus
+    p_specs['frag_spell_mult'] = frag_spell_mult
+    combat_state = {'enemy_weaken_turns': 0, 'enemy_weaken_amount': 0}
     turn_idx = 0
+
+    def _summon_strike():
+        sm = _active_summon(player)
+        if not sm or not monster.is_alive():
+            return
+        dummy = Character(sm.get('name', 'Invocation'), max(1, int(sm.get('hp', 1))), int(sm.get('atk', 1)), int(sm.get('defense', 0)), crit=float(sm.get('crit', 0.03)))
+        dummy.max_hp = max(1, int(sm.get('max_hp', dummy.hp)))
+        s_dmg, s_crit = compute_damage(dummy, monster, {'bonus_crit': 0.0})
+        if s_dmg > 0:
+            monster.take_damage(s_dmg)
+            msg = f"Invocation ({sm.get('name','?')}) inflige {s_dmg} dégâts."
+            if s_crit:
+                msg += " Critique !"
+            print(c(msg, Ansi.BRIGHT_CYAN))
 
     while player.is_alive() and monster.is_alive():
         turn_idx += 1
         took_damage_this_turn = False
         used_conso = False
-        _combat_panel(player, monster, mdef['name'], sprite_m, depth)
+        summon = _active_summon(player)
+        _combat_panel(player, monster, mdef['name'], sprite_m, depth, summon=summon)
         cmd=input('> ').strip()
-        defend=False
         if cmd=='1':
-            dmg = compute_damage(player, monster, p_specs) + player.temp_buffs['atk']
+            dmg_roll, crit_hit = compute_damage(player, monster, p_specs)
+            dmg = dmg_roll + player.temp_buffs['atk']
+            dmg = int(max(1, round(dmg * frag_atk_mult)))
             # Berserk : si PV <= 50%, bonus multiplicatif
             if player.hp <= player.max_hp // 2:
                 bz = p_specs.get('berserk', 0.0)  # ex: 0.5 = +50%
                 if bz:
                     dmg = int(dmg * (1.0 + bz))
             monster.take_damage(dmg); print(c(f"Vous infligez {dmg} dégâts.", Ansi.BRIGHT_GREEN))
+            if crit_hit:
+                print(c("Coup critique !", Ansi.BRIGHT_YELLOW))
             if p_specs.get('lifesteal'): player.heal(int(dmg* p_specs['lifesteal']))
             if p_specs.get('poison_on_hit'): poison_turns = max(poison_turns, 2)
-        elif cmd=='2': defend=True; print('Vous vous mettez en garde.')
-        elif cmd=='3':
-            if used_conso:
-                print("Vous avez déjà utilisé un consommable ce tour."); time.sleep(0.6)
-            else:
-                cons = player.consumables
-                if not cons:
-                    print('Aucun consommable.'); time.sleep(0.6)
-                else:
-                    # lister une seule fois puis lire l’entrée (ton code lisait "s" dans la boucle)
-                    for i, cns in enumerate(cons, 1):
-                        print(f"{i}) {item_summary(cns)}")
-                    s = input('Numéro à utiliser: ').strip()
-                    if s.isdigit():
-                        i = int(s) - 1
-                        if 0 <= i < len(cons):
-                            cns = cons[i]
-                            if cns.effect == 'heal':
-                                player.heal(cns.power)
-                            elif cns.effect == 'buff_atk':
-                                player.temp_buffs['atk'] += cns.power
-                                player.temp_buffs['turns'] = 3
-                            elif cns.effect == 'flee':
-                                cons.pop(i)
-                                print("Vous utilisez une pierre de rappel : fuite réussie !")
-                                return 'fled'
-                            cons.pop(i)
-                            used_conso = True          # ← verrouille pour ce tour
-        elif cmd=='4':
+            _summon_strike()
+        elif cmd=='2':
             base_cost = max(1, player.max_hp//8 + 2)  # ou ton coût actuel/plus punitif
             cost_mult = p_specs.get("special_cost_mult", 1.0)
-            dmg_mult  = p_specs.get("special_dmg_mult", 1.0)
+            dmg_mult  = p_specs.get("special_dmg_mult", 1.0) * (1.0 + _spell_pouv(player) * 0.03)
 
             cost = int(base_cost * cost_mult)
             if player.hp > cost:
                 player.take_damage(cost)
                 burst = int(((player.atk + player.temp_buffs['atk']) * 2 + random.randint(0,6)) * dmg_mult)
+                burst = int(max(1, round(burst * frag_atk_mult)))
                 monster.take_damage(burst)
                 print(c(f"Spéciale ! -{cost} PV, {burst} dégâts.", Ansi.BRIGHT_MAGENTA))
+                _summon_strike()
             else:
                 print("Pas assez de PV pour la spéciale.")
+        elif cmd=='3':
+            casted, _spell_flash, spell_action = _cast_combat_spell(player, monster, depth, p_specs, combat_state)
+            if not casted:
+                continue
+            if spell_action == 'damage':
+                _summon_strike()
+        elif cmd=='4':
+            if used_conso:
+                print("Vous avez déjà utilisé un consommable ce tour."); time.sleep(0.6)
+            else:
+                conso_result = _use_combat_consumable(player)
+                if conso_result == 'fled':
+                    _finalize_fight()
+                    return 'fled'
+                if conso_result is True:
+                    used_conso = True
+                else:
+                    continue
         elif cmd=='5':
-            if random.random()<0.5: print('Vous fuyez.'); time.sleep(0.6); return 'fled'
+            if random.random()<0.5:
+                print('Vous fuyez.'); time.sleep(0.6)
+                _finalize_fight()
+                return 'fled'
             else: print('Fuite ratée !')
         else: print('Choix invalide.')
         # DOT poison
@@ -1708,10 +2825,25 @@ def fight(player, depth, boss=False):
             print(f"Poison inflige {dot} dégâts.")
         # Riposte
         if monster.is_alive():
-            mdmg = compute_damage(monster, player)
-            if defend: mdmg //= 2
+            mdmg, _mcrit = compute_damage(monster, player)
+            if combat_state.get('enemy_weaken_turns', 0) > 0:
+                mdmg = max(0, mdmg - combat_state.get('enemy_weaken_amount', 0))
+            mdmg = max(0, mdmg - int(p_specs.get('spell_defense', 0)))
+            if frag_def_reduct > 0:
+                mdmg = max(0, int(round(mdmg * (1.0 - frag_def_reduct))))
             if random.random() < p_specs.get('dodge', 0.0):
                 print('Vous esquivez !'); mdmg = 0
+            sm = _active_summon(player)
+            if mdmg > 0 and sm:
+                absorb_raw = max(1, int(math.ceil(mdmg * 0.5)))
+                player_part = max(0, mdmg - absorb_raw)
+                absorb_real = max(0, absorb_raw - int(sm.get('defense', 0)))
+                sm['hp'] = max(0, int(sm.get('hp', 0)) - absorb_real)
+                mdmg = player_part
+                print(c(f"{sm.get('name','Invocation')} intercepte {absorb_raw} dégâts ({absorb_real} subis).", Ansi.BRIGHT_CYAN))
+                if int(sm.get('hp', 0)) <= 0:
+                    print(c(f"{sm.get('name','Invocation')} est détruite.", Ansi.BRIGHT_RED))
+                    player.summon = None
             player.take_damage(mdmg)
             if mdmg > 0: took_damage_this_turn = True
             print(c(f"{mdef['name']} inflige {mdmg} dégâts.", Ansi.BRIGHT_RED))
@@ -1723,6 +2855,10 @@ def fight(player, depth, boss=False):
             player.temp_buffs['turns'] -= 1
             if player.temp_buffs['turns'] == 0:
                 player.temp_buffs['atk'] = 0
+        if combat_state.get('enemy_weaken_turns', 0) > 0:
+            combat_state['enemy_weaken_turns'] -= 1
+            if combat_state['enemy_weaken_turns'] == 0:
+                combat_state['enemy_weaken_amount'] = 0
         # Régénération    
         raw_rg = int(p_specs.get('regen', 0))
         if raw_rg > 0:
@@ -1766,10 +2902,19 @@ def fight(player, depth, boss=False):
 
             # Drop de consommable (indépendant de l'objet)
             if random.random() < _combat_cons_drop_chance(depth):
-                cons = random_consumable()
+                cons = random_consumable(depth, source='loot')
                 print('Butin:', item_summary(cons))
                 if len(player.consumables) < player.consumables_limit:
                     player.consumables.append(cons)
+
+            spell_drop_chance = BALANCE.get('spell_drop_base_chance', 0.01) + depth * BALANCE.get('spell_drop_depth_bonus', 0.001)
+            if random.random() < min(0.08, spell_drop_chance):
+                sid_list = _pick_spell_ids(depth, set(player.spell_scrolls), count=1, source='loot')
+                if sid_list:
+                    sid = sid_list[0]
+                    sp = _spell_by_id(sid)
+                    player.spell_scrolls.append(sid)
+                    print(c(f"Butin rare: parchemin {sp.name}.", Ansi.BRIGHT_BLUE))
 
             if boss:
                 player.boss_keys += 1
@@ -1779,7 +2924,9 @@ def fight(player, depth, boss=False):
                 _try_grant_normal_key(player, depth)
 
             pause()
+            _finalize_fight()
             return ('win', mdef['id'])
+    _finalize_fight()
     return 'dead'
 
 # ========================== QUÊTES ==========================
@@ -1831,8 +2978,10 @@ def journal(player):
 
 # ========================== CARTE & ÉTAGES ==========================
 def _monsters_per_floor(depth):
-    # Progression plus douce que 8 + depth*2, pour limiter la surabondance de loot.
-    return max(5, 6 + depth + depth // 2)
+    # Nombre de monstres aléatoire par étage, avec une plage qui monte doucement.
+    low = max(4, 5 + depth // 2)
+    high = max(low + 1, 8 + depth + depth // 2)
+    return random.randint(low, high)
 
 def _map_items_per_floor(depth):
     # Les étages initiaux restent sobres; la densité d'objets monte ensuite.
@@ -1863,6 +3012,14 @@ class Floor:
             pos = self._random_floor_pos(occ); occ.add(pos)
             name = random.choice(NPC_NAMES); kind = random.choice(['slay','survive'])
             self.npcs[pos] = {'name': name, 'quest': make_quest(kind, depth, pos, name, depth)}
+        self.sages = set()
+        sage_start = BALANCE.get('spell_sage_start_depth', 3)
+        sage_every = max(1, BALANCE.get('spell_sage_every', 5))
+        if depth >= sage_start and ((depth - sage_start) % sage_every == 0):
+            spos = self._far_floor_pos(self.start, min_dist=12, occupied=occ)
+            if spos:
+                self.sages.add(spos)
+                occ.add(spos)
 
         # Shops
         self.shops=set()
@@ -1904,7 +3061,7 @@ class Floor:
         # Fog & POIs vus
         self.discovered=set(); self.visible=set()
         self.seen_shops=set(); self.seen_npcs=set(); self.seen_stairs=set(); self.seen_treasures=set()
-        self.seen_altars=set(); self.seen_casinos=set()
+        self.seen_altars=set(); self.seen_casinos=set(); self.seen_sages=set()
         self.elites = set()
         if depth > 0 and depth % 5 == 0:
             epos = self._far_floor_pos(self.start, min_dist=14, occupied=occ)
@@ -2038,10 +3195,10 @@ class Floor:
 def box_sprite(sprite_lines):
     if not sprite_lines:
         return []
-    w = len(sprite_lines[0])
+    w = max((visible_len(line) for line in sprite_lines), default=0)
     top = c('┌' + '─'*w + '┐', Ansi.BRIGHT_WHITE)
     bot = c('└' + '─'*w + '┘', Ansi.BRIGHT_WHITE)
-    body = [c('│', Ansi.BRIGHT_WHITE) + line + c('│', Ansi.BRIGHT_WHITE) for line in sprite_lines]
+    body = [c('│', Ansi.BRIGHT_WHITE) + _pad_ansi_right(line, w) + c('│', Ansi.BRIGHT_WHITE) for line in sprite_lines]
     return [top] + body + [bot]
 
 def _visible_cells(floor: Floor, player_pos, radius=8):
@@ -2071,6 +3228,8 @@ def interaction_hint(floor, player_pos):
         return "Sanctuaire présent — appuyez sur E."
     if pos in getattr(floor, 'npcs', {}):
         return "PNJ présent — appuyez sur E."
+    if pos in getattr(floor, 'sages', set()):
+        return "Le Sorcier vous attend — appuyez sur E."
     # Hint contextuel pour les portes verrouillées adjacentes.
     for dx, dy in ((1,0), (-1,0), (0,1), (0,-1)):
         door_pos = (x + dx, y + dy)
@@ -2081,99 +3240,144 @@ def interaction_hint(floor, player_pos):
             return "Porte verrouillée à proximité — nécessite une clé normale."
     return None
 
-def render_map(floor, player_pos, player, fatigue):
+def render_map(floor, player_pos, player):
     # maj visibilité
     base_radius = 8
     bonus = player.all_specials().get('fov_bonus', 0)
-    floor.visible = _visible_cells(floor, player_pos, radius=base_radius + bonus)
-    floor.discovered |= floor.visible
+    visible = _visible_cells(floor, player_pos, radius=base_radius + bonus)
+    floor.visible = visible
+    floor.discovered |= visible
+
     # mémoriser les POIs vus pour rester visibles ensuite
-    if floor.up and floor.up in floor.visible: floor.seen_stairs.add(floor.up)
-    if floor.down in floor.visible: floor.seen_stairs.add(floor.down)
-    for p in list(floor.shops):
-        if p in floor.visible: floor.seen_shops.add(p)
-    for p in list(floor.npcs.keys()):
-        if p in floor.visible: floor.seen_npcs.add(p)
-    for p in list(getattr(floor,'treasures',set())):
-        if p in floor.visible: floor.seen_treasures.add(p)
-    for p in list(getattr(floor,'altars',set())):
-        if p in floor.visible: floor.seen_altars.add(p)
-    for p in list(getattr(floor,'casinos',set())):
-        if p in floor.visible: floor.seen_casinos.add(p)
+    if floor.up and floor.up in visible:
+        floor.seen_stairs.add(floor.up)
+    if floor.down in visible:
+        floor.seen_stairs.add(floor.down)
+    for p in floor.shops:
+        if p in visible:
+            floor.seen_shops.add(p)
+    for p in floor.npcs.keys():
+        if p in visible:
+            floor.seen_npcs.add(p)
+    for p in getattr(floor, 'treasures', set()):
+        if p in visible:
+            floor.seen_treasures.add(p)
+    for p in getattr(floor, 'altars', set()):
+        if p in visible:
+            floor.seen_altars.add(p)
+    for p in getattr(floor, 'casinos', set()):
+        if p in visible:
+            floor.seen_casinos.add(p)
+    for p in getattr(floor, 'sages', set()):
+        if p in visible:
+            floor.seen_sages.add(p)
+
     # entête et bordures
     T = floor.theme
     clear_screen()
-    print(c('┌' + '─'*MAP_W + '┐', T['border']))
-    title = f" Donjon — Étage {floor.depth} | Fatigue {fatigue} "
+    border_left = c('│', T['border'])
+    border_right = c('│', T['border'])
+    print(c('┌' + '─' * MAP_W + '┐', T['border']))
+    title = f" Donjon — Étage {floor.depth} "
     pad = max(0, MAP_W - len(title))
-    print(c('│', T['border']) + c(title + ' '*pad, T['title']) + c('│', T['border']))
-    print(c('├' + '─'*MAP_W + '┤', T['border']))
+    print(border_left + c(title + ' ' * pad, T['title']) + border_right)
+    print(c('├' + '─' * MAP_W + '┤', T['border']))
 
-    spr = player.sprite if getattr(player, 'sprite', None) else SPRITES.get('knight', [])
-    spr_colored = colorize_sprite_by_hp(spr, player.hp, player.max_hp)
-    spr_boxed   = box_sprite(spr_colored)
-    spr_h = len(spr_boxed)
+    # pré-calcul sprite latéral (évite de recalculer chaque ligne)
+    side_lines = []
+    side_blank = ""
+    top_off = 0
+    if SHOW_SIDE_SPRITE:
+        spr = player.sprite if getattr(player, 'sprite', None) else SPRITES.get('knight', [])
+        spr_colored = colorize_sprite_by_hp(spr, player.hp, player.max_hp)
+        summon = _active_summon(player)
+        if summon and int(summon.get('hp', 0)) > 0:
+            s_spr = summon.get('sprite', [])
+            s_col = colorize_sprite_by_hp(s_spr, int(summon.get('hp', 1)), int(summon.get('max_hp', 1)))
+            h_side = max(len(spr_colored), len(s_col))
+            p_w = max((visible_len(x) for x in spr_colored), default=0)
+            s_w = max((visible_len(x) for x in s_col), default=0)
+            for i in range(h_side):
+                pl = spr_colored[i] if i < len(spr_colored) else (" " * p_w)
+                sl = s_col[i] if i < len(s_col) else (" " * s_w)
+                side_lines.append(_pad_ansi_right(pl, p_w) + "  " + _pad_ansi_right(sl, s_w))
+        else:
+            p_w = max((visible_len(x) for x in spr_colored), default=0)
+            side_lines = [_pad_ansi_right(line, p_w) for line in spr_colored]
+        spr_h = len(side_lines)
+        spr_w = max((visible_len(x) for x in side_lines), default=0)
+        top_off = max(0, (MAP_H - spr_h) // 2)
+        side_blank = '  ' + (' ' * spr_w)
 
+    # cache local pour réduire les lookups en boucle
+    discovered = floor.discovered
+    grid = floor.grid
+    up = floor.up
+    down = floor.down
+    seen_stairs = floor.seen_stairs
+    shops = floor.shops
+    seen_shops = floor.seen_shops
+    npcs = floor.npcs
+    seen_npcs = floor.seen_npcs
     treasures = getattr(floor, 'treasures', set())
     boss_treasures = getattr(floor, 'boss_treasures', set())
+    seen_treasures = floor.seen_treasures
     altars = getattr(floor, 'altars', set())
+    seen_altars = floor.seen_altars
     casinos = getattr(floor, 'casinos', set())
+    seen_casinos = floor.seen_casinos
+    sages = getattr(floor, 'sages', set())
+    seen_sages = floor.seen_sages
     elites = getattr(floor, 'elites', set())
     locked_doors = getattr(floor, 'locked_doors', {})
+    floor_dot = c('·', T['floor'])
+    wall_hash = c('#', T['wall'])
 
+    px, py = player_pos
     for y in range(MAP_H):
-        row=''
+        row_parts = []
         for x in range(MAP_W):
-            pos=(x,y)
-            is_vis = pos in floor.visible
-            is_disc = pos in floor.discovered
-            ch = floor.grid[y][x]
+            pos = (x, y)
+            is_vis = pos in visible
+            is_disc = pos in discovered
             if not is_disc:
-                row += ' '
+                row_parts.append(' ')
                 continue
-            if (x,y)==player_pos and is_vis:
-                row += c(PLAYER_ICON, T['player'])
-            elif floor.up and (x,y)==floor.up and (is_vis or (x,y) in floor.seen_stairs):
-                row += c(STAIR_UP, T['up'])
-            elif (x,y)==floor.down and (is_vis or (x,y) in floor.seen_stairs):
-                row += c(STAIR_DOWN, T['down'])
-            elif (x,y) in floor.shops and (is_vis or (x,y) in floor.seen_shops):
-                row += c(SHOP_ICON, T['shop'])
-            elif (x,y) in floor.npcs and (is_vis or (x,y) in floor.seen_npcs):
-                row += c(NPC_ICON, T['npc'])
-            elif (x,y) in treasures and (is_vis or (x,y) in floor.seen_treasures):
-                if (x, y) in boss_treasures:
-                    row += c(TREASURE_BOSS_ICON, T['elite'])
+            if x == px and y == py and is_vis:
+                row_parts.append(c(PLAYER_ICON, T['player']))
+            elif up and pos == up and (is_vis or pos in seen_stairs):
+                row_parts.append(c(STAIR_UP, T['up']))
+            elif pos == down and (is_vis or pos in seen_stairs):
+                row_parts.append(c(STAIR_DOWN, T['down']))
+            elif pos in shops and (is_vis or pos in seen_shops):
+                row_parts.append(c(SHOP_ICON, T['shop']))
+            elif pos in npcs and (is_vis or pos in seen_npcs):
+                row_parts.append(c(NPC_ICON, T['npc']))
+            elif pos in sages and (is_vis or pos in seen_sages):
+                row_parts.append(c(SAGE_ICON, Ansi.BRIGHT_BLUE))
+            elif pos in treasures and (is_vis or pos in seen_treasures):
+                if pos in boss_treasures:
+                    row_parts.append(c(TREASURE_BOSS_ICON, T['elite']))
                 else:
-                    row += c(TREASURE_ICON, T['item'])
-            elif (x,y) in altars and (is_vis or (x,y) in floor.seen_altars):
-                row += c(ALTAR_ICON, T.get('down', Ansi.BRIGHT_MAGENTA))
-            elif (x,y) in casinos and (is_vis or (x,y) in floor.seen_casinos):
-                row += c(CASINO_ICON, T.get('shop', Ansi.BRIGHT_YELLOW))
-            elif (x,y) in elites:  # boss visible
-                row += c(ELITE_ICON, T['elite'])
-            elif (x,y) in locked_doors and (is_vis or is_disc):
-                row += c(LOCKED_DOOR_ICON, T['shop'])
-            elif is_vis:
-                # on NE MONTRE PAS les monstres volontairement pour garder la surprise
-                row += c('·', T['floor']) if ch==FLOOR else c('#', T['wall'])
+                    row_parts.append(c(TREASURE_ICON, T['item']))
+            elif pos in altars and (is_vis or pos in seen_altars):
+                row_parts.append(c(ALTAR_ICON, T.get('down', Ansi.BRIGHT_MAGENTA)))
+            elif pos in casinos and (is_vis or pos in seen_casinos):
+                row_parts.append(c(CASINO_ICON, T.get('shop', Ansi.BRIGHT_YELLOW)))
+            elif pos in elites:
+                row_parts.append(c(ELITE_ICON, T['elite']))
+            elif pos in locked_doors and (is_vis or is_disc):
+                row_parts.append(c(LOCKED_DOOR_ICON, T['shop']))
             else:
-                # zone connue mais non visible : terrain seulement, en atténué
-                row += c('·', T['floor']) if ch==FLOOR else c('#', T['wall'])
-            side = ''
-        # Affichage du sprite du joueur à côté de la carte    
+                row_parts.append(floor_dot if grid[y][x] == FLOOR else wall_hash)
+
+        side = ''
         if SHOW_SIDE_SPRITE:
-            spr = player.sprite if getattr(player, 'sprite', None) else SPRITES.get('knight', [])
-            spr_colored = colorize_sprite_by_hp(spr, player.hp, player.max_hp)
-            spr_h = len(spr_colored)
-            spr_w = len(spr_colored[0]) if spr_colored else 0
-            # centrage vertical du sprite par rapport à la carte
-            top_off = max(0, (MAP_H - spr_h) // 2)
-            if top_off <= y < top_off + spr_h:
-                side = '  ' + spr_colored[y - top_off]  # 2 espaces puis la ligne du sprite
+            if top_off <= y < top_off + len(side_lines):
+                side = '  ' + side_lines[y - top_off]
             else:
-                side = '  ' + ' ' * spr_w
-        print(c('│', T['border']) + row + c('│', T['border'])+ (side if SHOW_SIDE_SPRITE else ''))
+                side = side_blank
+        print(border_left + ''.join(row_parts) + border_right + side)
     print(c('└' + '─' * MAP_W + '┘', T['border']))
     print(c(HUD_CONTROLS, Ansi.BRIGHT_BLACK))
     print(player.stats_summary())
@@ -2228,7 +3432,7 @@ def open_treasure_choice(player, depth, chest_type='normal'):
         rarity_score = sum(rarity_xp.get(getattr(it, 'rarity', 'Commun'), 0) for it in choices)
 
         while True:
-            rows = [f"{i+1}) {c(chest_item_label(it), rarity_color(it.rarity))}  {preview_delta(player,it)}" for i,it in enumerate(choices)]
+            rows = [f"{i+1}) {c(chest_item_label(it), item_display_color(it))}  {preview_delta(player,it)}" for i,it in enumerate(choices)]
             rows += ["", f"Choisissez 1-{pick_count}, ou 'q' pour ignorer"]
             clear_screen()
             # Si tu as des thèmes d'étage, passe theme=floor.theme ici via l'appelant
@@ -2264,7 +3468,7 @@ def open_treasure_choice(player, depth, chest_type='normal'):
                     else:
                         if len(player.inventory) < player.inventory_limit:
                             player.inventory.append(it)
-                            draw_box('Trésor', [f"Vous prenez: {c(chest_item_label(it), rarity_color(it.rarity))}"], width=140)
+                            draw_box('Trésor', [f"Vous prenez: {c(chest_item_label(it), item_display_color(it))}"], width=140)
                             pause()
                             return True
                         else:
@@ -2280,7 +3484,22 @@ def open_treasure_choice(player, depth, chest_type='normal'):
 
 # ========================== MARCHAND (double panneau) ==========================
 def shop_stock_for_depth(depth):
-    stock=[random_consumable() for _ in range(3)]
+    stock=[random_consumable(depth, source='shop') for _ in range(3)]
+
+    # Emplacements dédiés aux "nouveaux" consommables pour garantir leur présence en boutique.
+    common_frags = [fr for fr in GEM_FRAGMENT_POOL if fr.rarity == 'Commun']
+    advanced_frags = [fr for fr in GEM_FRAGMENT_POOL if fr.rarity != 'Commun']
+    if depth >= 10:
+        # À partir de l'étage 10, au moins un fragment avancé + un premium achetable.
+        if advanced_frags:
+            stock.append(random.choice(advanced_frags))
+        if HIGH_TIER_POTIONS:
+            stock.append(random.choice(HIGH_TIER_POTIONS))
+    else:
+        # Avant l'étage 10, on garantit au moins un fragment commun.
+        if common_frags:
+            stock.append(random.choice(common_frags))
+
     for _ in range(3+depth//2): stock.append(random_item(depth, DummyPlayer()))
     return stock
     
@@ -2289,6 +3508,12 @@ def open_shop(player, depth):
     stock = shop_stock_for_depth(depth)
     normal_key_stock = 1
     normal_key_price = BALANCE.get('normal_key_shop_price', 70) + depth * 6
+    shop_spell_sid = None
+    spell_min_depth = BALANCE.get('spell_shop_min_depth', 8)
+    if depth >= spell_min_depth and random.random() < BALANCE.get('spell_shop_offer_chance', 0.6):
+        offer = _pick_spell_ids(depth, set(player.spell_scrolls), count=1, source='shop')
+        if offer:
+            shop_spell_sid = offer[0]
 
     while True:
         # ==== SECTION VENDEUR (achats) ====
@@ -2303,12 +3528,16 @@ def open_shop(player, depth):
                 price = price_of(it)
                 label = item_summary(it)
                 if not isinstance(it, Consumable):
-                    label = c(label, rarity_color(it.rarity))
+                    label = c(label, item_display_color(it))
                 seller_rows.append(f"{i:>2}) {label}  — {price} or")
         seller_rows.append('')
         seller_rows.append(c("Commandes :", Ansi.BRIGHT_WHITE))
         seller_rows.append(" - <num> : acheter l’item du vendeur")
         seller_rows.append(f" - k : acheter 1 clé normale ({normal_key_price} or) [stock: {normal_key_stock}]")
+        if shop_spell_sid:
+            sp = _spell_by_id(shop_spell_sid)
+            sp_price = _spell_scroll_price(sp, depth)
+            seller_rows.append(f" - p : acheter parchemin {sp.name} ({sp_price} or)")
         seller_rows.append(" - v<num> : vendre VOTRE item (voir encadré du bas)")
         seller_rows.append(" - va : vendre TOUS vos objets équipables")
         seller_rows.append(" - s<num> : détails de VOTRE item (voir encadré du bas)")
@@ -2353,6 +3582,17 @@ def open_shop(player, depth):
             normal_key_stock -= 1
             player.normal_keys += 1
             print("Vous achetez une clé normale."); time.sleep(0.8)
+            continue
+        if cmd == 'p' and shop_spell_sid:
+            sp = _spell_by_id(shop_spell_sid)
+            sp_price = _spell_scroll_price(sp, depth)
+            if player.gold < sp_price:
+                print("Or insuffisant pour ce parchemin."); time.sleep(0.8); continue
+            player.gold -= sp_price
+            player.spell_scrolls.append(shop_spell_sid)
+            draw_box("Marchand", [f"Vous achetez le parchemin: {sp.name}."], width=76)
+            shop_spell_sid = None
+            time.sleep(0.8)
             continue
         # ACHAT — numéro simple (liste du vendeur)
         if cmd.isdigit():
@@ -2431,7 +3671,7 @@ def title_menu():
     lines.extend(art)
     lines.append("")
     lines.append("But : descendre les étages, survivre et devenir surpuissant grâce au loot.")
-    lines.append("Fonctionnalités : quêtes PNJ, marchand, casino (tous les 5 étages), autels, salles verrouillées à clés.")
+    lines.append("Fonctionnalités : quêtes PNJ, marchand, casino, autels, salles verrouillées, Sorcier & grimoire.")
     lines.append(MENU_CONTROLS)
     lines.append("Astuce : entre un nombre + direction (ex: 5d) ou '.' pour répéter le dernier pas.")
     clear_screen(); draw_box('ROGMINAL — Menu', lines, width=100); pause("Appuyez sur Entrée pour jouer...")
@@ -2500,15 +3740,28 @@ def game_loop():
         run_tests(); return 'tests_ok'
     title_menu()
     player=Player('Héros')
+    if '--debug-all-spells' in sys.argv or '--all-spells' in sys.argv:
+        player.spellbook_unlocked = True
+        player.spell_scrolls = [sp.sid for sp in SPELLS]
+        draw_box("Debug", ["Mode debug activé: tous les sorts ont été ajoutés au grimoire."], width=92)
+        time.sleep(0.8)
     floors=[Floor(0)]; cur=0; pos=floors[0].start
-    fatigue=0
     while True:
         f = floors[cur]
-        render_map(f, pos, player, fatigue)
+        render_map(f, pos, player)
         kind, payload = read_command(player.last_move)
         act = None  # Initialisation pour éviter UnboundLocalError
         if kind == 'action':
             act = payload
+        if kind == 'quick_spell':
+            slot = int(payload) - 1
+            if not player.spellbook_unlocked:
+                print("Vous ne possédez pas encore de grimoire."); time.sleep(0.7); continue
+            if not (0 <= slot < len(player.spell_scrolls)):
+                print(f"Aucun sort assigné au raccourci {payload}."); time.sleep(0.7); continue
+            sid = player.spell_scrolls[slot]
+            pos, _ = _cast_explore_spell(player, sid, f, pos)
+            continue
         if act == 'x':
             print('Au revoir !'); return 'quit'
         if act == 'j':
@@ -2517,6 +3770,8 @@ def game_loop():
             open_inventory(player); continue
         if act == 'c':
             open_stats_interface(player); continue
+        if act == 'm':
+            pos = open_spellbook(player, f.depth, f, pos); continue
         if act == 'e':
             if f.up and pos == f.up and cur > 0:
                 target = choose_floor_destination(cur, direction=-1)
@@ -2524,7 +3779,7 @@ def game_loop():
                     cur = target
                     f = floors[cur]
                     pos = f.down if f.down else f.start
-                    fatigue = 0
+                    player.reset_floor_magic()
                     draw_box('Étage', [f"Vous remontez à l'étage {cur}."], width=44); time.sleep(0.5)
             elif pos == f.down:
                 target = choose_floor_destination(cur, direction=1)
@@ -2534,7 +3789,7 @@ def game_loop():
                     cur = target
                     f = floors[cur]
                     pos = f.up if f.up else f.start
-                    fatigue = 0
+                    player.reset_floor_magic()
                     draw_box('Étage', [f"Vous descendez à l'étage {cur}."], width=44); time.sleep(0.5)
             elif pos in f.shops:
                 uses = player.shop_access_count.get(cur, 0)
@@ -2568,6 +3823,29 @@ def game_loop():
                         player.quests_active.append(q); draw_box('Quête', ['Quête acceptée !'], width=36); pause()
                 else:
                     draw_box('Quête', ['Rien à remettre pour le moment.'], width=40); pause()
+            elif pos in getattr(f, 'sages', set()):
+                if f.depth in player.sage_depths_visited:
+                    draw_box("Sorcier", ["Le Sorcier se détourne.", "« Un seul parchemin par étage. »"], width=72)
+                    pause()
+                else:
+                    sage_uses = int(player.sage_access_count.get(cur, 0))
+                    if sage_uses == 0:
+                        _picked = open_sage_spell_offer(player, f.depth)
+                        player.sage_access_count[cur] = 1
+                    elif sage_uses == 1:
+                        reroll_cost = int(BALANCE.get('sage_reroll_cost_base', 240) + f.depth * BALANCE.get('sage_reroll_cost_depth_mult', 20))
+                        if player.gold < reroll_cost:
+                            draw_box("Sorcier", [f"Reroll indisponible: {reroll_cost} or requis.", "Vous n'avez pas assez d'or."], width=82)
+                            pause()
+                        else:
+                            ask = input(f"Payer {reroll_cost} or pour un reroll unique du Sorcier ? (o/n) ").strip().lower()
+                            if ask in ('o', 'y'):
+                                player.gold -= reroll_cost
+                                _picked = open_sage_spell_offer(player, f.depth)
+                                player.sage_access_count[cur] = 2
+                    else:
+                        draw_box("Sorcier", ["Le Sorcier reste silencieux.", "Reroll déjà consommé pour cet étage."], width=78)
+                        pause()
             elif pos in getattr(f, 'casinos', set()):
                 open_casino(player, f.depth)
             elif pos in getattr(f, 'altars', set()):
@@ -2599,7 +3877,7 @@ def game_loop():
 
                     # Événements / Rencontres
                     ev = maybe_trigger_event(player, f.depth)
-                    meet = (ev == 'fight') or (pos in f.monsters and random.random() < (0.30 + 0.02*f.depth + min(0.15, fatigue*0.01)))
+                    meet = (ev == 'fight') or (pos in f.monsters and random.random() < (0.30 + 0.02*f.depth))
                     if meet:
                         status, kill_id = _normalize_fight_result(fight(player, f.depth))
                         if status == 'dead':
@@ -2609,11 +3887,10 @@ def game_loop():
                             f.monsters.discard(pos)
 
                         _apply_combat_quest_progress(player, status, kill_id)
-                        fatigue = min(50, fatigue+1)
 
                     # Ramassage d'ITEMS (indépendant des trésors)
                     if pos in f.items:
-                        it = random_item(f.depth, player) if random.random() < 0.65 else random_consumable()
+                        it = random_item(f.depth, player) if random.random() < 0.65 else random_consumable(f.depth, source='loot')
                         msg = 'Vous trouvez: ' + item_summary(it)
                         if isinstance(it, Consumable):
                             if len(player.consumables) < player.consumables_limit:
@@ -2708,6 +3985,11 @@ def run_tests():
     assert it2.atk_bonus > it.atk_bonus and it2.crit_bonus >= it.crit_bonus, 'upgrade_item invalide'
     # Structures étage étendues
     assert hasattr(f, 'locked_doors') and hasattr(f, 'altars') and hasattr(f, 'casinos'), 'Attributs d étage manquants'
+    # Magie: génération sage + sélection de parchemin
+    f3 = Floor(BALANCE.get('spell_sage_start_depth', 3))
+    assert hasattr(f3, 'sages'), 'Attribut sages manquant'
+    picked = _pick_spell_ids(8, set(), count=2, source='sage')
+    assert len(picked) >= 1 and all(pid in SPELLS_BY_ID for pid in picked), 'Sélection de parchemins invalide'
     print('OK')
 
 if __name__=='__main__':
