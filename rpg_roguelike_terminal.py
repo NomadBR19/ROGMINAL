@@ -542,6 +542,8 @@ SPELLS = [
     Spell('mending', 'Soin léger', 'Commun', 'combat', 'Restaure une petite quantité de PV.', 12),
     Spell('spark', 'Étincelle', 'Rare', 'combat', 'Projectile arcanique fiable.', 6),
     Spell('frostbind', 'Lien de givre', 'Rare', 'combat', 'Dégâts + affaiblit l’attaque ennemie.', 4),
+    Spell('withering_hex', 'Maléfice d’usure', 'Rare', 'combat', 'Dégâts légers + baisse l’ATK ennemie.', 3),
+    Spell('sunder_ward', 'Brèche runique', 'Rare', 'combat', 'Dégâts légers + baisse la DEF ennemie.', 3),
     Spell('arcbolt', 'Arc voltaïque', 'Rare', 'combat', 'Décharge instable à gros écart.', 6),
     Spell('arcane_skin', 'Peau arcanique', 'Rare', 'explore', 'Bouclier magique temporaire.', 1),
     Spell('gild_touch', 'Toucher doré', 'Rare', 'explore', 'Transmute un peu de mana en or.', 18),
@@ -550,6 +552,8 @@ SPELLS = [
     Spell('siphon', 'Siphon nocturne', 'Épique', 'combat', 'Dégâts modérés + soin partiel.', 6),
     Spell('rift', 'Faille courte', 'Épique', 'combat', 'Impact précis sur une faille arcanique.', 8),
     Spell('summon_skeleton', 'Invocation: Squelette', 'Épique', 'combat', 'Invoque un squelette combattant persistant.', 2),
+    Spell('summon_afterimage', 'Invocation: Image rémanante', 'Épique', 'combat', 'Clone défensif: n’attaque pas, intercepte 90% des dégâts.', 1),
+    Spell('call_of_dead', 'Invocation: Appel des morts', 'Épique', 'combat', 'Tente de convertir un squelette ennemi dans votre horde.', 0),
     Spell('prospection', 'Prospection', 'Épique', 'explore', 'Transmute du mana en or.', 24),
     Spell('focus_sigil', 'Sceau de focalisation', 'Épique', 'explore', 'Focus arcanique pour l’étage courant.', 1),
     Spell('teleport', 'Translocation', 'Épique', 'explore', 'Téléporte près de l’escalier de descente.', 0),
@@ -892,6 +896,7 @@ class Player(Character):
         self.spell_scrolls = []
         self.spells_cast_this_floor = 0
         self.sage_depths_visited = set()
+
     def equip(self,item):
         slot=item.slot; old=self.equipment.get(slot)
         if old: self._apply_modifiers(old,remove=True); self.inventory.append(old)
@@ -975,6 +980,123 @@ class Player(Character):
 
             print(c(f"*** Niveau {self.level}! +HP:{BALANCE['level_hp_gain']} "f"+ATK:{BALANCE['level_atk_gain']} +DEF:{BALANCE['level_def_gain']}"f"(+{heal} PV) ***", Ansi.BRIGHT_YELLOW))
             time.sleep(0.6)
+
+CONSUMABLE_STACK_MAX = 3
+
+def _normalize_consumables(player):
+    """
+    Normalise le sac consommables au format:
+      [{'item': Consumable, 'qty': int}, ...]
+    Gère aussi l'ancien format (liste plate de Consumable).
+    """
+    raw = getattr(player, 'consumables', [])
+    if not isinstance(raw, list):
+        player.consumables = []
+        return player.consumables
+
+    normalized = []
+
+    def _push_one(cns):
+        for st in normalized:
+            if st['item'] == cns and st['qty'] < CONSUMABLE_STACK_MAX:
+                st['qty'] += 1
+                return
+        normalized.append({'item': cns, 'qty': 1})
+
+    for entry in raw:
+        if isinstance(entry, Consumable):
+            _push_one(entry)
+            continue
+
+        if isinstance(entry, dict):
+            cns = entry.get('item')
+            qty = entry.get('qty', 1)
+            if isinstance(cns, Consumable):
+                try:
+                    q = max(1, int(qty))
+                except Exception:
+                    q = 1
+                for _ in range(q):
+                    _push_one(cns)
+                continue
+
+        if isinstance(entry, (tuple, list)) and len(entry) == 2 and isinstance(entry[0], Consumable):
+            cns, qty = entry
+            try:
+                q = max(1, int(qty))
+            except Exception:
+                q = 1
+            for _ in range(q):
+                _push_one(cns)
+
+    player.consumables = normalized
+    return player.consumables
+
+def _consumable_stacks(player):
+    return _normalize_consumables(player)
+
+def _consumable_slots_used(player):
+    return len(_consumable_stacks(player))
+
+def _consumable_total_count(player):
+    return sum(st['qty'] for st in _consumable_stacks(player))
+
+def _add_consumable(player, cns, qty=1):
+    """
+    Ajoute jusqu'à qty unités en respectant:
+    - slots max: player.consumables_limit
+    - stack max: CONSUMABLE_STACK_MAX
+    Retourne le nombre d'unités réellement ajoutées.
+    """
+    stacks = _consumable_stacks(player)
+    limit = int(getattr(player, 'consumables_limit', 0))
+    added = 0
+    for _ in range(max(0, int(qty))):
+        placed = False
+        for st in stacks:
+            if st['item'] == cns and st['qty'] < CONSUMABLE_STACK_MAX:
+                st['qty'] += 1
+                placed = True
+                break
+        if not placed:
+            if len(stacks) >= limit:
+                break
+            stacks.append({'item': cns, 'qty': 1})
+            placed = True
+        if placed:
+            added += 1
+    return added
+
+def _consume_consumable_at(player, idx):
+    """
+    Consomme 1 unité du stack idx et retourne le consommable.
+    Retourne None si idx invalide.
+    """
+    stacks = _consumable_stacks(player)
+    if not (0 <= idx < len(stacks)):
+        return None
+    st = stacks[idx]
+    cns = st['item']
+    st['qty'] -= 1
+    if st['qty'] <= 0:
+        stacks.pop(idx)
+    return cns
+
+def _discard_consumable_at(player, idx, qty=1):
+    """
+    Jette qty unités depuis le stack idx.
+    Retourne le nombre d'unités jetées.
+    """
+    stacks = _consumable_stacks(player)
+    if not (0 <= idx < len(stacks)):
+        return 0
+    st = stacks[idx]
+    to_drop = max(1, int(qty))
+    dropped = min(st['qty'], to_drop)
+    st['qty'] -= dropped
+    if st['qty'] <= 0:
+        stacks.pop(idx)
+    return dropped
 
 MONSTER_DEFS = [
     {'id':'slime','name':'Slime','hp':12,'atk':3,'def':1,'crit':0.02,'xp':6,'gold':3,'sprite':SPRITES['slime']},
@@ -1086,10 +1208,15 @@ def _spell_by_id(sid):
     return SPELLS_BY_ID.get(sid)
 
 def _is_summon_spell_sid(sid):
-    return sid in ('summon_slime', 'summon_skeleton', 'summon_dragon')
+    return sid in ('summon_slime', 'summon_skeleton', 'summon_dragon', 'summon_afterimage')
 
 def _summon_spell_cooldown_total():
     return max(1, int(BALANCE.get('summon_spell_cooldown_floors', 5)))
+
+def _summon_spell_cooldown_for_sid(sid):
+    if sid == 'summon_afterimage':
+        return 2
+    return _summon_spell_cooldown_total()
 
 def _summon_spell_cd_left(player, sid):
     if not _is_summon_spell_sid(sid):
@@ -1188,6 +1315,7 @@ def _pick_spell_ids(depth, known_ids, count=1, source='loot'):
         'summon_slime': 0.45,
         'summon_skeleton': 0.28,
         'summon_dragon': 0.12,
+        'summon_afterimage': 0.22,
     }
     for _ in range(min(count, len(pool))):
         total = sum(weights.get(sp.rarity, 1) * summon_weight_mult.get(sp.sid, 1.0) for sp in pool)
@@ -1308,9 +1436,125 @@ def _active_summon(player):
         return None
     if int(sm.get('hp', 0)) <= 0:
         return None
+    if sm.get('id') == 'horde':
+        _refresh_horde_stats(player, sm)
     return sm
 
+def _afterimage_sprite(player):
+    base = player.sprite if getattr(player, 'sprite', None) else SPRITES.get('knight', [])
+    return [c(line, Ansi.BRIGHT_CYAN) for line in base]
+
+def _horde_member_stats(player):
+    pouv = max(0, _spell_pouv(player))
+    return {
+        'hp': max(8, 12 + int(pouv * 2.6)),
+        'atk': max(1, 3 + int(pouv * 0.75)),
+        'defense': max(0, 1 + int(pouv * 0.35)),
+        'crit': max(0.0, min(0.35, 0.02 + pouv * 0.003)),
+    }
+
+def _horde_map_sprite(count):
+    ccount = max(1, int(count))
+    shown = min(3, ccount)
+    extra = max(0, ccount - shown)
+    skel = SPRITES.get('skeleton', [])
+    if not skel:
+        skel = ["[S]"]
+    skel_w = max((visible_len(line) for line in skel), default=3)
+    padded = [_pad_ansi_right(line, skel_w) for line in skel]
+    rows = []
+    for line in padded:
+        rows.append(c(("  ".join([line] * shown)), Ansi.BRIGHT_WHITE))
+    rows.append(c(f"Horde x{ccount}", Ansi.BRIGHT_CYAN))
+    if extra > 0:
+        rows.append(c(f"(+{extra} squelettes non affichés)", Ansi.BRIGHT_BLACK))
+    return rows
+
+def _horde_conversion_chance(player, horde_count):
+    # Base 50%, bonus POUV, puis pénalité par taille de horde.
+    pouv = max(0, _spell_pouv(player))
+    base = 0.50 + (pouv * 0.010)
+    penalty = max(0, int(horde_count) - 1) * 0.03
+    return max(0.05, min(0.70, base - penalty))
+
+def _refresh_horde_stats(player, horde):
+    if not isinstance(horde, dict) or horde.get('id') != 'horde':
+        return horde
+    count = max(1, int(horde.get('horde_count', 1)))
+    member = _horde_member_stats(player)
+    old_max = max(1, int(horde.get('max_hp', member['hp'] * count)))
+    old_hp = max(0, int(horde.get('hp', old_max)))
+    hp_ratio = old_hp / old_max if old_max > 0 else 1.0
+    new_max = max(1, member['hp'] * count)
+    horde['max_hp'] = new_max
+    horde['hp'] = max(0, min(new_max, int(round(new_max * hp_ratio))))
+    horde['atk'] = max(1, member['atk'] * count)
+    horde['defense'] = max(0, member['defense'] + int(count * 0.12))
+    horde['crit'] = member['crit']
+    horde['member_hp'] = member['hp']
+    horde['member_atk'] = member['atk']
+    horde['member_defense'] = member['defense']
+    horde['map_sprite'] = _horde_map_sprite(count)
+    horde['use_hp_tint'] = False
+    horde['can_attack'] = True
+    horde['guard_ratio'] = 0.45
+    return horde
+
+def _create_horde(player, count=1):
+    ccount = max(1, int(count))
+    member = _horde_member_stats(player)
+    max_hp = member['hp'] * ccount
+    horde = {
+        'id': 'horde',
+        'name': 'Horde',
+        'sprite': SPRITES.get('skeleton', []),
+        'hp': max_hp,
+        'max_hp': max_hp,
+        'atk': member['atk'] * ccount,
+        'defense': member['defense'],
+        'crit': member['crit'],
+        'source_sid': 'call_of_dead',
+        'horde_count': ccount,
+        'member_hp': member['hp'],
+        'member_atk': member['atk'],
+        'member_defense': member['defense'],
+        'can_attack': True,
+        'guard_ratio': 0.45,
+        'map_sprite': _horde_map_sprite(ccount),
+        'use_hp_tint': False,
+    }
+    return _refresh_horde_stats(player, horde)
+
+def _horde_add_member(player, horde, add=1):
+    if not isinstance(horde, dict) or horde.get('id') != 'horde':
+        return horde
+    add_n = max(1, int(add))
+    member = _horde_member_stats(player)
+    horde['horde_count'] = max(1, int(horde.get('horde_count', 1))) + add_n
+    horde['max_hp'] = max(1, int(horde.get('max_hp', 1)) + member['hp'] * add_n)
+    horde['hp'] = min(horde['max_hp'], int(horde.get('hp', 0)) + member['hp'] * add_n)
+    return _refresh_horde_stats(player, horde)
+
 def _summon_from_spell(player, sid):
+    if sid == 'summon_afterimage':
+        pouv = max(0, _spell_pouv(player))
+        max_hp = max(18, int(player.max_hp * 0.45) + 8 + int(pouv * 3.0))
+        return {
+            'id': 'afterimage',
+            'name': 'Image rémanante',
+            'sprite': _afterimage_sprite(player),
+            'map_sprite': _afterimage_sprite(player),
+            'use_hp_tint': False,
+            'hp': max_hp,
+            'max_hp': max_hp,
+            'atk': 0,
+            'defense': max(0, int(player.defense * 0.25) + int(pouv * 0.3)),
+            'crit': 0.0,
+            'can_attack': False,
+            'guard_ratio': 0.90,
+            'source_sid': sid,
+        }
+
     summon_id = {'summon_slime': 'slime', 'summon_skeleton': 'skeleton', 'summon_dragon': 'dragon'}.get(sid)
     if not summon_id:
         return None
@@ -1333,6 +1577,8 @@ def _summon_from_spell(player, sid):
         'atk': atk,
         'defense': defense,
         'crit': max(0.0, min(0.35, 0.03 + pouv * 0.005)),
+        'can_attack': True,
+        'guard_ratio': 0.50,
         'source_sid': sid,
     }
 
@@ -1547,6 +1793,56 @@ def _upgrade_item_name(name):
         return re.sub(r" \+\d+$", f" +{lvl}", name)
     return f"{name} +1"
 
+def _item_upgrade_level(it):
+    m = re.search(r" \+(\d+)$", getattr(it, 'name', '') or '')
+    return int(m.group(1)) if m else 0
+
+def _item_upgrade_limit(it):
+    # None = illimité.
+    if isinstance(it, Consumable):
+        return 0
+    if bool((getattr(it, 'special', {}) or {}).get('cursed', False)):
+        return None
+    caps = {'Commun': 0, 'Rare': 1, 'Épique': 2, 'Légendaire': None, 'Étrange': 0}
+    return caps.get(getattr(it, 'rarity', 'Commun'), 0)
+
+def _item_upgrade_cap_text(it):
+    cap = _item_upgrade_limit(it)
+    lvl = _item_upgrade_level(it)
+    if cap is None:
+        return f"+{lvl} / illimité"
+    return f"+{lvl} / +{cap} max"
+
+def _can_upgrade_item(it):
+    cap = _item_upgrade_limit(it)
+    if cap is None:
+        return True
+    return _item_upgrade_level(it) < cap
+
+def _upgrade_break_chance_for_item(it, base_break_chance):
+    ch = float(base_break_chance)
+    # Les objets maudits sont plus difficiles à améliorer sans casse.
+    if bool((getattr(it, 'special', {}) or {}).get('cursed', False)):
+        ch *= 1.9
+    return max(0.0, min(0.90, ch))
+
+def _find_fragment_stack_index(player):
+    stacks = _consumable_stacks(player)
+    for i, st in enumerate(stacks):
+        cns = st.get('item')
+        if isinstance(cns, Consumable) and str(getattr(cns, 'effect', '')).startswith('frag_'):
+            return i
+    return None
+
+def _has_fragment_guard(player):
+    return _find_fragment_stack_index(player) is not None
+
+def _consume_fragment_guard(player):
+    idx = _find_fragment_stack_index(player)
+    if idx is None:
+        return None
+    return _consume_consumable_at(player, idx)
+
 def upgrade_item(it):
     if isinstance(it, Consumable):
         return it
@@ -1583,7 +1879,7 @@ def open_casino(player, depth):
             "",
             f"1) Miser {gamble_cost} or pour un item aléatoire",
             f"2) Upgrader un objet équipé ({upgrade_cost} or)",
-            f"   Risque de casse: {upgrade_break_chance*100:.1f}%",
+            f"   Risque de casse de base: {upgrade_break_chance*100:.1f}%",
             "q) Quitter",
         ]
 
@@ -1592,9 +1888,14 @@ def open_casino(player, depth):
             equip_rows.append(c("(Aucun objet équipé)", Ansi.BRIGHT_BLACK))
         else:
             for i, (slot, it) in enumerate(equipped, 1):
+                cap_txt = _item_upgrade_cap_text(it)
+                risk_txt = f"{_upgrade_break_chance_for_item(it, upgrade_break_chance)*100:.1f}%"
+                state = c("upgrade possible", Ansi.BRIGHT_GREEN) if _can_upgrade_item(it) else c("cap atteint", Ansi.BRIGHT_RED)
                 equip_rows.append(f"{i:>2}) {slot}: {item_summary(it)}")
+                equip_rows.append(f"    Progression: {cap_txt}  |  Casse: {risk_txt}  |  {state}")
         equip_rows.append("")
-        equip_rows.append(c("Upgrade disponible à tout niveau.", Ansi.BRIGHT_GREEN))
+        equip_rows.append("Caps: Commun +0, Rare +1, Épique +2, Légendaire illimité, Cursed illimité.")
+        equip_rows.append("Un objet cursed casse plus facilement; un fragment peut le protéger sur une tentative.")
         equip_rows.append("Tapez 2 puis le numéro de l'objet.")
 
         clear_screen()
@@ -1631,9 +1932,40 @@ def open_casino(player, depth):
                 print("Choix invalide."); time.sleep(0.6); continue
             idx = int(pick) - 1
             slot, old = equipped[idx]
+            if not _can_upgrade_item(old):
+                draw_box("Upgrade bloqué", [f"{old.name}: cap d'amélioration atteint ({_item_upgrade_cap_text(old)})."], width=BOX_W)
+                pause()
+                continue
+
+            item_break_chance = _upgrade_break_chance_for_item(old, upgrade_break_chance)
+            use_fragment_guard = False
+            is_cursed = bool((getattr(old, 'special', {}) or {}).get('cursed', False))
+            if is_cursed:
+                if _has_fragment_guard(player):
+                    ask = input("Objet cursed: utiliser 1 fragment pour éviter la casse en cas d'échec ? (o/n) ").strip().lower()
+                    use_fragment_guard = (ask in ('o', 'y'))
+                else:
+                    draw_box("Avertissement cursed", [
+                        f"{old.name} est maudit.",
+                        f"Risque de casse élevé: {item_break_chance*100:.1f}%",
+                        "Aucun fragment disponible pour sécuriser la tentative."
+                    ], width=BOX_W)
+                    time.sleep(0.8)
+
             player.gold -= upgrade_cost
             player._apply_modifiers(old, remove=True)
-            if random.random() < upgrade_break_chance:
+            if random.random() < item_break_chance:
+                if use_fragment_guard:
+                    frag_used = _consume_fragment_guard(player)
+                    player.equipment[slot] = old
+                    player._apply_modifiers(old, remove=False)
+                    frag_name = frag_used.name if frag_used else "fragment"
+                    draw_box("Protection activée", [
+                        f"Tentative ratée sur {old.name}, mais l'objet ne casse pas.",
+                        f"Consommé: {frag_name}.",
+                    ], width=BOX_W)
+                    pause()
+                    continue
                 player.equipment[slot] = None
                 draw_box("Upgrade raté", [f"{old.name} se brise pendant l'amélioration.", "Le risque du casino..."], width=BOX_W)
                 pause()
@@ -2050,7 +2382,8 @@ def open_inventory(player):
         # Infos de capacité
         top_rows.append(
             f"Sac Objets : {len(player.inventory)}/{player.inventory_limit}   |   "
-            f"Sac Consommables : {len(getattr(player,'consumables',[]))}/{getattr(player,'consumables_limit',0)}"
+            f"Sac Consommables : {_consumable_slots_used(player)}/{getattr(player,'consumables_limit',0)} slots "
+            f"({_consumable_total_count(player)} objets)"
         )
 
         # === PANNEAU 2 : Sac Objets (vendables/équipables) ===
@@ -2076,20 +2409,21 @@ def open_inventory(player):
         # === PANNEAU 3 : Sac Consommables (non vendables) ===
         conso_rows = []
         conso_rows.append(c('Sac — Consommables (non vendables)', Ansi.BRIGHT_CYAN))
-        cons = getattr(player, 'consumables', [])
+        cons = _consumable_stacks(player)
         if not cons:
             conso_rows.append(c('(Vide)', Ansi.BRIGHT_BLACK))
         else:
-            for i, cns in enumerate(cons, 1):
+            for i, st in enumerate(cons, 1):
+                cns = st['item']
                 label = item_summary(cns)
                 if str(getattr(cns, 'effect', '')).startswith('frag_'):
                     label = c(label, consumable_display_color(cns))
-                conso_rows.append(f"{i:>2}) {label}")
+                conso_rows.append(f"{i:>2}) {label}  x{st['qty']}")
 
         conso_rows.append('')
         conso_rows.append(c('Actions consommables :', Ansi.BRIGHT_WHITE))
         conso_rows.append(" - uc<num> : utiliser le consommable")
-        conso_rows.append(" - dc<num> : jeter le consommable")
+        conso_rows.append(" - dc<num> : jeter 1 unité du consommable")
 
         # === Rendu ===
         clear_screen()
@@ -2139,16 +2473,17 @@ def open_inventory(player):
         # CONSOMMABLES : utiliser / jeter (uc<num>, dc<num>)
         if (cmd.startswith('uc') or cmd.startswith('dc')) and cmd[2:].isdigit():
             idx = int(cmd[2:]) - 1
-            cons = getattr(player, 'consumables', [])
+            cons = _consumable_stacks(player)
             if 0 <= idx < len(cons):
                 if cmd.startswith('uc'):
-                    cns = cons.pop(idx)  # consommer tout de suite
+                    cns = cons[idx]['item']
                     status, msg = _apply_consumable_effect(player, cns, in_combat=False)
-                    if status == 'blocked':
-                        cons.insert(idx, cns)
+                    if status != 'blocked':
+                        _consume_consumable_at(player, idx)
                     print(msg); time.sleep(0.8 if status == 'blocked' else 0.6)
                 else:  # dc<num>
-                    cons.pop(idx); print("Consommable jeté."); time.sleep(0.6)
+                    dropped = _discard_consumable_at(player, idx, qty=1)
+                    print(f"Consommable jeté ({dropped})."); time.sleep(0.6)
             else:
                 print("Index de consommable invalide."); time.sleep(0.6)
             continue
@@ -2187,6 +2522,21 @@ def _spell_effect_details(sp, player):
         hi = lo + 3
         weaken = max(1, int(1 + (pouv * 0.16)))
         return f"Combat • dégâts: {lo}-{hi} • -{weaken} ATK ennemi (2 tours)"
+    if sp.sid == 'withering_hex':
+        lo = max(1, int((sp.power + lvl * 0.4 + pouv * 2.0) * 0.72 * _spell_power_mult(player)))
+        hi = lo + 2
+        weaken = max(1, int(2 + (pouv * 0.22)))
+        return f"Combat • dégâts: {lo}-{hi} • -{weaken} ATK ennemi (3 tours)"
+    if sp.sid == 'sunder_ward':
+        lo = max(1, int((sp.power + lvl * 0.4 + pouv * 2.0) * 0.72 * _spell_power_mult(player)))
+        hi = lo + 2
+        shred = max(1, int(1 + (pouv * 0.20)))
+        return f"Combat • dégâts: {lo}-{hi} • -{shred} DEF ennemi (3 tours)"
+    if sp.sid == 'call_of_dead':
+        sm = _active_summon(player)
+        hcount = int(sm.get('horde_count', 0)) if sm and sm.get('id') == 'horde' else 0
+        chance = int(round(_horde_conversion_chance(player, hcount + 1) * 100))
+        return f"Combat • vs Squelette uniquement • conversion en Horde: {chance}% (diminue avec la taille)"
     if sp.sid == 'arcbolt':
         lo = max(1, int((sp.power + lvl * 0.4 + pouv * 2.0) * 1.05 * _spell_power_mult(player)))
         hi = lo + 6
@@ -2213,14 +2563,22 @@ def _spell_effect_details(sp, player):
         lo = max(1, int((sp.power + lvl * 0.4 + pouv * 2.0) * 1.40 * _spell_power_mult(player))) + 1
         hi = lo + 7
         return f"Combat • dégâts: {lo}-{hi} (burst volatil)"
-    if sp.sid in ('summon_slime', 'summon_skeleton', 'summon_dragon'):
+    if sp.sid in ('summon_slime', 'summon_skeleton', 'summon_dragon', 'summon_afterimage'):
         sm = _active_summon(player)
-        name = {'summon_slime': 'Slime', 'summon_skeleton': 'Squelette', 'summon_dragon': 'Dragonnet'}.get(sp.sid, 'Invocation')
+        name = {
+            'summon_slime': 'Slime',
+            'summon_skeleton': 'Squelette',
+            'summon_dragon': 'Dragonnet',
+            'summon_afterimage': 'Image rémanante',
+        }.get(sp.sid, 'Invocation')
         cd_left = _summon_spell_cd_left(player, sp.sid)
-        cd_total = _summon_spell_cooldown_total()
+        cd_total = _summon_spell_cooldown_for_sid(sp.sid)
         cd_txt = f" • recharge: {cd_left}/{cd_total} étage(s)" if cd_left > 0 else f" • recharge: {cd_total} étage(s)"
         if sm:
             return f"Combat/Exploration • invoque {name} (actif: {sm.get('name','?')} {sm.get('hp',0)}/{sm.get('max_hp',0)}){cd_txt}"
+        if sp.sid == 'summon_afterimage':
+            pv = max(18, int(player.max_hp * 0.45) + 8 + int(pouv * 3.0))
+            return f"Combat/Exploration • invoque {name} • clone non-offensif ({pv} PV) • intercepte 90%{cd_txt}"
         pv = max(8, int((12 + sp.power * 4) + pouv * 4.0))
         atk = max(1, int((3 + sp.power) + pouv * 0.8))
         return f"Combat/Exploration • invoque {name} • stats approx: {pv} PV / {atk} ATK{cd_txt}"
@@ -2260,7 +2618,7 @@ def _cast_explore_spell(player, sid, floor=None, player_pos=None):
     if not player.can_cast_spell():
         print("Limite de sorts atteinte pour cet étage."); time.sleep(0.8)
         return player_pos, False
-    if sid in ('summon_slime', 'summon_skeleton', 'summon_dragon'):
+    if sid in ('summon_slime', 'summon_skeleton', 'summon_dragon', 'summon_afterimage'):
         if _active_summon(player):
             print("Une invocation est déjà active."); time.sleep(0.7)
             return player_pos, False
@@ -2273,7 +2631,7 @@ def _cast_explore_spell(player, sid, floor=None, player_pos=None):
             print("Invocation impossible."); time.sleep(0.7)
             return player_pos, False
         player.summon = summon
-        player.summon_spell_cds[sid] = _summon_spell_cooldown_total()
+        player.summon_spell_cds[sid] = _summon_spell_cooldown_for_sid(sid)
         player.spells_cast_this_floor += 1
         draw_box("Magie", [f"{sp.name}: {summon['name']} vous accompagne désormais ({summon['hp']} PV)."], width=96)
         time.sleep(0.8)
@@ -2499,7 +2857,7 @@ def _combat_panel(player, monster, mname, sprite_m, depth, summon=None):
     else:
         spell_label = c("3) Sort (verrouillé)", Ansi.BRIGHT_BLUE)
     lines.append(
-        f"1) Attaquer  2) Spéciale  {spell_label}  4) Consommable  {c('5) Fuir', Ansi.BRIGHT_RED)}"
+        f"1) Attaquer  2) Spéciale  {spell_label}  4) Consommable  {c('Q) Fuir', Ansi.BRIGHT_RED)}"
     )
     frag = _active_next_combat_buffs(player)
     if frag.get('fights_left', 0) > 0:
@@ -2513,10 +2871,10 @@ def _combat_panel(player, monster, mname, sprite_m, depth, summon=None):
     clear_screen(); draw_box(f"Combat — Étage {depth}", lines, width=max(MAP_W, 80))
 
 def _use_combat_consumable(player):
-    cons = player.consumables
+    cons = _consumable_stacks(player)
     if not cons:
         print('Aucun consommable.'); time.sleep(0.6); return False
-    rows = [f"{i+1}) {item_summary(cns)}" for i, cns in enumerate(cons)]
+    rows = [f"{i+1}) {item_summary(st['item'])}  x{st['qty']}" for i, st in enumerate(cons)]
     rows += ["q) Retour"]
     draw_box("Consommables", rows, width=max(96, MAP_W + 26))
     s = input('> ').strip().lower()
@@ -2527,14 +2885,14 @@ def _use_combat_consumable(player):
     i = int(s) - 1
     if not (0 <= i < len(cons)):
         print("Index invalide."); time.sleep(0.6); return False
-    cns = cons[i]
+    cns = cons[i]['item']
     status, msg = _apply_consumable_effect(player, cns, in_combat=True)
     if status == 'used':
-        cons.pop(i)
+        _consume_consumable_at(player, i)
         print(msg)
         return True
     if status == 'fled':
-        cons.pop(i)
+        _consume_consumable_at(player, i)
         print(msg)
         return 'fled'
     print(msg); time.sleep(0.6)
@@ -2583,6 +2941,43 @@ def _cast_combat_spell(player, monster, depth, p_specs, combat_state):
         combat_state['enemy_weaken_turns'] = max(combat_state.get('enemy_weaken_turns', 0), 2)
         combat_state['enemy_weaken_amount'] = max(combat_state.get('enemy_weaken_amount', 0), weaken)
         print(c(f"{sp.name}: {dmg} dégâts et -{weaken} ATK ennemi (2 tours).", Ansi.BRIGHT_CYAN))
+    elif sid == 'withering_hex':
+        dmg = int(_spell_damage_roll(player, sp.power, 0, 2, coeff=0.72) * spell_mult)
+        if spell_crit: dmg = max(1, int(dmg * 1.65))
+        monster.take_damage(dmg)
+        weaken = max(1, int(2 + (_spell_pouv(player) * 0.22)))
+        combat_state['enemy_weaken_turns'] = max(combat_state.get('enemy_weaken_turns', 0), 3)
+        combat_state['enemy_weaken_amount'] = max(combat_state.get('enemy_weaken_amount', 0), weaken)
+        print(c(f"{sp.name}: {dmg} dégâts et -{weaken} ATK ennemi (3 tours).", Ansi.BRIGHT_CYAN))
+    elif sid == 'sunder_ward':
+        dmg = int(_spell_damage_roll(player, sp.power, 0, 2, coeff=0.72) * spell_mult)
+        if spell_crit: dmg = max(1, int(dmg * 1.65))
+        monster.take_damage(dmg)
+        shred = max(1, int(1 + (_spell_pouv(player) * 0.20)))
+        combat_state['enemy_def_shred_turns'] = max(combat_state.get('enemy_def_shred_turns', 0), 3)
+        combat_state['enemy_def_shred_amount'] = max(combat_state.get('enemy_def_shred_amount', 0), shred)
+        print(c(f"{sp.name}: {dmg} dégâts et -{shred} DEF ennemi (3 tours).", Ansi.BRIGHT_CYAN))
+    elif sid == 'call_of_dead':
+        if combat_state.get('monster_id') != 'skeleton':
+            print("Appel des morts ne fonctionne que contre un squelette."); time.sleep(0.6); return False, None, None
+        sm = _active_summon(player)
+        if sm and sm.get('id') != 'horde':
+            print("Une autre invocation est déjà active."); time.sleep(0.6); return False, None, None
+        current_count = int(sm.get('horde_count', 0)) if sm else 0
+        chance = _horde_conversion_chance(player, current_count + 1)
+        player.spells_cast_this_floor += 1
+        if random.random() <= chance:
+            if sm and sm.get('id') == 'horde':
+                _horde_add_member(player, sm, add=1)
+                new_count = int(sm.get('horde_count', 1))
+            else:
+                player.summon = _create_horde(player, count=1)
+                new_count = 1
+            monster.hp = 0
+            print(c(f"{sp.name}: conversion réussie ({int(round(chance*100))}%). Horde x{new_count}.", Ansi.BRIGHT_CYAN))
+            return True, Ansi.BRIGHT_CYAN, 'convert'
+        print(c(f"{sp.name}: échec de conversion ({int(round(chance*100))}% de chance).", Ansi.BRIGHT_BLUE))
+        return True, Ansi.BRIGHT_BLUE, 'utility'
     elif sid == 'arcbolt':
         dmg = int((_spell_damage_roll(player, sp.power, 0, 6, coeff=1.05) + bonus) * spell_mult)
         if spell_crit: dmg = max(1, int(dmg * 1.65))
@@ -2622,7 +3017,7 @@ def _cast_combat_spell(player, monster, depth, p_specs, combat_state):
         if spell_crit: dmg = max(1, int(dmg * 1.65))
         monster.take_damage(dmg)
         print(c(f"{sp.name} percute la cible pour {dmg} dégâts !", Ansi.BRIGHT_MAGENTA))
-    elif sid in ('summon_slime', 'summon_skeleton', 'summon_dragon'):
+    elif sid in ('summon_slime', 'summon_skeleton', 'summon_dragon', 'summon_afterimage'):
         if _active_summon(player):
             print("Une invocation est déjà active."); time.sleep(0.6); return False, None, None
         cd_left = _summon_spell_cd_left(player, sid)
@@ -2632,7 +3027,7 @@ def _cast_combat_spell(player, monster, depth, p_specs, combat_state):
         if not summon:
             print("Invocation impossible."); time.sleep(0.6); return False, None, None
         player.summon = summon
-        player.summon_spell_cds[sid] = _summon_spell_cooldown_total()
+        player.summon_spell_cds[sid] = _summon_spell_cooldown_for_sid(sid)
         print(c(f"{sp.name}: {summon['name']} rejoint le combat ({summon['hp']} PV).", Ansi.BRIGHT_CYAN))
         player.spells_cast_this_floor += 1
         return True, Ansi.BRIGHT_CYAN, 'summon'
@@ -2646,7 +3041,9 @@ def _cast_combat_spell(player, monster, depth, p_specs, combat_state):
 
 def compute_damage(attacker, defender, attacker_specs=None):
     attacker_specs = attacker_specs or {}
-    base = max(0, attacker.atk - defender.defense)
+    flat_def_pen = max(0, int(round(float(attacker_specs.get('flat_def_pen', 0.0)))))
+    eff_def = max(0, int(defender.defense) - flat_def_pen)
+    base = max(0, attacker.atk - eff_def)
     variance = random.randint(-2, 3)
     dmg = max(0, base + variance)
     bonus_crit = float(attacker_specs.get('bonus_crit', 0.0))
@@ -2739,16 +3136,25 @@ def fight(player, depth, boss=False):
     p_specs = player.all_specials(); poison_turns=0
     p_specs['bonus_crit'] = float(p_specs.get('spell_crit', 0.0)) + frag_crit_bonus
     p_specs['frag_spell_mult'] = frag_spell_mult
-    combat_state = {'enemy_weaken_turns': 0, 'enemy_weaken_amount': 0}
+    combat_state = {
+        'enemy_weaken_turns': 0,
+        'enemy_weaken_amount': 0,
+        'enemy_def_shred_turns': 0,
+        'enemy_def_shred_amount': 0,
+        'monster_id': mdef.get('id'),
+    }
     turn_idx = 0
 
     def _summon_strike():
         sm = _active_summon(player)
         if not sm or not monster.is_alive():
             return
+        if not bool(sm.get('can_attack', True)) or int(sm.get('atk', 0)) <= 0:
+            return
         dummy = Character(sm.get('name', 'Invocation'), max(1, int(sm.get('hp', 1))), int(sm.get('atk', 1)), int(sm.get('defense', 0)), crit=float(sm.get('crit', 0.03)))
         dummy.max_hp = max(1, int(sm.get('max_hp', dummy.hp)))
-        s_dmg, s_crit = compute_damage(dummy, monster, {'bonus_crit': 0.0})
+        s_pen = combat_state.get('enemy_def_shred_amount', 0) if combat_state.get('enemy_def_shred_turns', 0) > 0 else 0
+        s_dmg, s_crit = compute_damage(dummy, monster, {'bonus_crit': 0.0, 'flat_def_pen': s_pen})
         if s_dmg > 0:
             monster.take_damage(s_dmg)
             msg = f"Invocation ({sm.get('name','?')}) inflige {s_dmg} dégâts."
@@ -2762,9 +3168,12 @@ def fight(player, depth, boss=False):
         used_conso = False
         summon = _active_summon(player)
         _combat_panel(player, monster, mdef['name'], sprite_m, depth, summon=summon)
-        cmd=input('> ').strip()
+        cmd=input('> ').strip().lower()
         if cmd=='1':
-            dmg_roll, crit_hit = compute_damage(player, monster, p_specs)
+            atk_specs = dict(p_specs)
+            if combat_state.get('enemy_def_shred_turns', 0) > 0:
+                atk_specs['flat_def_pen'] = combat_state.get('enemy_def_shred_amount', 0)
+            dmg_roll, crit_hit = compute_damage(player, monster, atk_specs)
             dmg = dmg_roll + player.temp_buffs['atk']
             dmg = int(max(1, round(dmg * frag_atk_mult)))
             # Berserk : si PV <= 50%, bonus multiplicatif
@@ -2811,7 +3220,7 @@ def fight(player, depth, boss=False):
                     used_conso = True
                 else:
                     continue
-        elif cmd=='5':
+        elif cmd=='q':
             if random.random()<0.5:
                 print('Vous fuyez.'); time.sleep(0.6)
                 _finalize_fight()
@@ -2835,7 +3244,8 @@ def fight(player, depth, boss=False):
                 print('Vous esquivez !'); mdmg = 0
             sm = _active_summon(player)
             if mdmg > 0 and sm:
-                absorb_raw = max(1, int(math.ceil(mdmg * 0.5)))
+                guard_ratio = max(0.0, min(1.0, float(sm.get('guard_ratio', 0.5))))
+                absorb_raw = max(1, int(math.ceil(mdmg * guard_ratio)))
                 player_part = max(0, mdmg - absorb_raw)
                 absorb_real = max(0, absorb_raw - int(sm.get('defense', 0)))
                 sm['hp'] = max(0, int(sm.get('hp', 0)) - absorb_real)
@@ -2859,6 +3269,10 @@ def fight(player, depth, boss=False):
             combat_state['enemy_weaken_turns'] -= 1
             if combat_state['enemy_weaken_turns'] == 0:
                 combat_state['enemy_weaken_amount'] = 0
+        if combat_state.get('enemy_def_shred_turns', 0) > 0:
+            combat_state['enemy_def_shred_turns'] -= 1
+            if combat_state['enemy_def_shred_turns'] == 0:
+                combat_state['enemy_def_shred_amount'] = 0
         # Régénération    
         raw_rg = int(p_specs.get('regen', 0))
         if raw_rg > 0:
@@ -2904,8 +3318,7 @@ def fight(player, depth, boss=False):
             if random.random() < _combat_cons_drop_chance(depth):
                 cons = random_consumable(depth, source='loot')
                 print('Butin:', item_summary(cons))
-                if len(player.consumables) < player.consumables_limit:
-                    player.consumables.append(cons)
+                _add_consumable(player, cons, qty=1)
 
             spell_drop_chance = BALANCE.get('spell_drop_base_chance', 0.01) + depth * BALANCE.get('spell_drop_depth_bonus', 0.001)
             if random.random() < min(0.08, spell_drop_chance):
@@ -3292,8 +3705,11 @@ def render_map(floor, player_pos, player):
         spr_colored = colorize_sprite_by_hp(spr, player.hp, player.max_hp)
         summon = _active_summon(player)
         if summon and int(summon.get('hp', 0)) > 0:
-            s_spr = summon.get('sprite', [])
-            s_col = colorize_sprite_by_hp(s_spr, int(summon.get('hp', 1)), int(summon.get('max_hp', 1)))
+            s_spr = summon.get('map_sprite') or summon.get('sprite', [])
+            if bool(summon.get('use_hp_tint', True)):
+                s_col = colorize_sprite_by_hp(s_spr, int(summon.get('hp', 1)), int(summon.get('max_hp', 1)))
+            else:
+                s_col = s_spr[:]
             h_side = max(len(spr_colored), len(s_col))
             p_w = max((visible_len(x) for x in spr_colored), default=0)
             s_w = max((visible_len(x) for x in s_col), default=0)
@@ -3456,8 +3872,7 @@ def open_treasure_choice(player, depth, chest_type='normal'):
                     # Ajout dans le bon sac
                     if isinstance(it, Consumable):
                         # Par sécurité, mais en principe on n'en a pas ici
-                        if len(player.consumables) < player.consumables_limit:
-                            player.consumables.append(it)
+                        if _add_consumable(player, it, qty=1) > 0:
                             draw_box('Trésor', [f"Vous prenez: {item_summary(it)} (consommable)"], width=140)
                             pause()
                             return True
@@ -3557,11 +3972,12 @@ def open_shop(player, depth):
         if getattr(player, 'consumables', None):
             player_rows.append('')
             player_rows.append(c('Vos consommables (non vendables)', Ansi.BRIGHT_CYAN))
-            if not player.consumables:
+            cons = _consumable_stacks(player)
+            if not cons:
                 player_rows.append(c('(Vide)', Ansi.BRIGHT_BLACK))
             else:
-                for cns in player.consumables:
-                    player_rows.append(f" • {item_summary(cns)}")
+                for st in cons:
+                    player_rows.append(f" • {item_summary(st['item'])} x{st['qty']}")
 
         # ==== Rendu : deux boîtes l’une sous l’autre ====
         clear_screen()
@@ -3605,10 +4021,9 @@ def open_shop(player, depth):
 
                 if isinstance(it, Consumable):
                     # sac dédié aux consommables (non vendables)
-                    if len(player.consumables) >= player.consumables_limit:
+                    if _add_consumable(player, it, qty=1) <= 0:
                         print('Sac de consommables plein.'); time.sleep(0.8); continue
                     player.gold -= price
-                    player.consumables.append(it)
                     stock.pop(idx)
                 else:
                     # inventaire normal
@@ -3893,8 +4308,7 @@ def game_loop():
                         it = random_item(f.depth, player) if random.random() < 0.65 else random_consumable(f.depth, source='loot')
                         msg = 'Vous trouvez: ' + item_summary(it)
                         if isinstance(it, Consumable):
-                            if len(player.consumables) < player.consumables_limit:
-                                player.consumables.append(it)
+                            if _add_consumable(player, it, qty=1) > 0:
                                 lines = [msg, "Ajouté aux consommables."]
                             else:
                                 lines = [msg, "Sac de consommables plein."]
@@ -3983,6 +4397,16 @@ def run_tests():
     it = Item('Lame test', 'weapon', 0, 4, 0, 0.02, 'Rare', 'Test.', None)
     it2 = upgrade_item(it)
     assert it2.atk_bonus > it.atk_bonus and it2.crit_bonus >= it.crit_bonus, 'upgrade_item invalide'
+    # Caps d'upgrade casino
+    it_common = Item('Dague commune', 'weapon', 0, 2, 0, 0.00, 'Commun', 'Test.', None)
+    it_rare1 = Item('Dague rare +1', 'weapon', 0, 3, 0, 0.01, 'Rare', 'Test.', None)
+    it_epi1 = Item('Dague épique +1', 'weapon', 0, 5, 0, 0.02, 'Épique', 'Test.', None)
+    it_cursed = Item('Lame maudite +7', 'weapon', 0, 6, -1, 0.03, 'Étrange', 'Test.', {'cursed': True})
+    assert _can_upgrade_item(it_common) is False, 'Commun ne doit pas être améliorable'
+    assert _can_upgrade_item(it_rare1) is False, 'Rare +1 ne doit plus être améliorable'
+    assert _can_upgrade_item(it_epi1) is True, 'Épique +1 doit encore être améliorable'
+    assert _item_upgrade_limit(it_cursed) is None, 'Cursed doit être illimité'
+    assert _upgrade_break_chance_for_item(it_cursed, 0.10) > 0.10, 'Cursed doit avoir plus de risque de casse'
     # Structures étage étendues
     assert hasattr(f, 'locked_doors') and hasattr(f, 'altars') and hasattr(f, 'casinos'), 'Attributs d étage manquants'
     # Magie: génération sage + sélection de parchemin
@@ -3990,6 +4414,32 @@ def run_tests():
     assert hasattr(f3, 'sages'), 'Attribut sages manquant'
     picked = _pick_spell_ids(8, set(), count=2, source='sage')
     assert len(picked) >= 1 and all(pid in SPELLS_BY_ID for pid in picked), 'Sélection de parchemins invalide'
+    # Nouveaux sorts debuff + invocation défensive
+    assert _spell_by_id('withering_hex') is not None and _spell_by_id('sunder_ward') is not None, 'Sorts de debuff manquants'
+    assert _summon_spell_cooldown_for_sid('summon_afterimage') == 2, 'Cooldown image rémanante invalide'
+    sm_after = _summon_from_spell(p, 'summon_afterimage')
+    assert sm_after and sm_after.get('can_attack') is False and abs(float(sm_after.get('guard_ratio', 0.0)) - 0.90) < 1e-9, 'Invocation image rémanante invalide'
+    # Horde de squelettes (Appel des morts)
+    assert _spell_by_id('call_of_dead') is not None, 'Sort Appel des morts manquant'
+    h = _create_horde(p, count=2)
+    assert h.get('id') == 'horde' and int(h.get('horde_count', 0)) == 2, 'Création de horde invalide'
+    before = int(h.get('horde_count', 0))
+    _horde_add_member(p, h, add=1)
+    assert int(h.get('horde_count', 0)) == before + 1, 'Ajout à la horde invalide'
+    c1 = _horde_conversion_chance(p, 1)
+    c6 = _horde_conversion_chance(p, 6)
+    assert c1 > c6, 'La conversion doit devenir plus difficile avec une grande horde'
+    # Consommables stackés
+    p2 = Player('StackTest')
+    heal = CONSUMABLE_POOL[0]
+    assert _add_consumable(p2, heal, qty=1) == 1
+    assert _add_consumable(p2, heal, qty=1) == 1
+    assert _add_consumable(p2, heal, qty=1) == 1
+    assert _consumable_slots_used(p2) == 1 and _consumable_total_count(p2) == 3, 'Stack x3 attendu'
+    assert _add_consumable(p2, heal, qty=1) == 1
+    assert _consumable_slots_used(p2) == 2 and _consumable_total_count(p2) == 4, 'Nouveau slot attendu au 4e exemplaire'
+    _consume_consumable_at(p2, 0)
+    assert _consumable_total_count(p2) == 3, 'Consommation d unité invalide'
     print('OK')
 
 if __name__=='__main__':
