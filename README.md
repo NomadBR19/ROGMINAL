@@ -5,9 +5,8 @@ Roguelike RPG **100% terminal** en Python, avec exploration par étages, combats
 ## Aperçu
 ROGMINAL est un dungeon crawler ASCII orienté progression:
 - exploration procédurale par étages
-- combats tactiques avec gestion de statistique, et choix d'orientation du style de jeu
-- montée en puissance via équipement, consommables etc
-- choix entre risque et récompense
+- combats tactiques avec gestion de statistique contre toute sorte de monstre
+- montée en puissance via équipement, consommables, sorts et invocation
 
 <img width="951" height="482" alt="image" src="https://github.com/user-attachments/assets/ab9c42d0-29ea-42c5-a362-8be8bd3b5f0e" />
 
