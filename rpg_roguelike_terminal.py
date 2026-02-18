@@ -353,8 +353,8 @@ CASINO_ICON = 'C'
 ALTAR_ICON = '+'
 LOCKED_DOOR_ICON = 'D'
 SAGE_ICON = 'S'
-HUD_CONTROLS = '[ZQSD/WASD] déplacer • E interagir • I inventaire • C stats • J journal • M grimoire • 1..0 ou &é"\'(-/è_çà sorts rapides • X quitter'
-MENU_CONTROLS = "Commandes : ZQSD/WASD se déplacer • E interagir (PNJ/boutique/autel/casino/sorcier) • I inventaire • C stats • J journal • M grimoire • 1..0 ou & é \" ' ( - / è _ ç à = sorts rapides • X quitter"
+HUD_CONTROLS = '[ZQSD/WASD] déplacer • E interagir • I inventaire • C stats • J journal • M grimoire • X quitter'
+MENU_CONTROLS = "Commandes : ZQSD/WASD se déplacer • E interagir • I inventaire • C stats • J journal • M grimoire • X quitter"
 QUICK_SPELL_KEYS = {
     '&': 1, 'é': 2, '"': 3, "'": 4, '(': 5, '-': 6,
     'è': 7, '_': 8, 'ç': 9, 'à': 10,
