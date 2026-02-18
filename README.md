@@ -1,4 +1,13 @@
-# ROGMINAL
+  $$$$$$$\   $$$$$$\   $$$$$$\  $$\      $$\ $$$$$$\ $$\   $$\  $$$$$$\  $$\       
+  $$  __$$\ $$  __$$\ $$  __$$\ $$$\    $$$ |\_$$  _|$$$\  $$ |$$  __$$\ $$ |      
+  $$ |  $$ |$$ /  $$ |$$ /  \__|$$$$\  $$$$ |  $$ |  $$$$\ $$ |$$ /  $$ |$$ |      
+  $$$$$$$  |$$ |  $$ |$$ |$$$$\ $$\$$\$$ $$ |  $$ |  $$ $$\$$ |$$$$$$$$ |$$ |      
+  $$  __$$< $$ |  $$ |$$ |\_$$ |$$ \$$$  $$ |  $$ |  $$ \$$$$ |$$  __$$ |$$ |      
+  $$ |  $$ |$$ |  $$ |$$ |  $$ |$$ |\$  /$$ |  $$ |  $$ |\$$$ |$$ |  $$ |$$ |      
+  $$ |  $$ | $$$$$$  |\$$$$$$  |$$ | \_/ $$ |$$$$$$\ $$ | \$$ |$$ |  $$ |$$$$$$$$\ 
+  \__|  \__| \______/  \______/ \__|     \__|\______|\__|  \__|\__|  \__|\________|
+                               R O G M I N A L                                     
+                                                                                   
 
 Roguelike RPG **100% terminal** en Python, avec exploration par étages, combats au tour par tour, loot, quêtes, autels, casino et magie.
 
@@ -8,6 +17,8 @@ ROGMINAL est un dungeon crawler ASCII orienté progression:
 - combats tactiques avec gestion de statistique, et choix d'orientation du style de jeu
 - montée en puissance via équipement, consommables etc
 - choix entre risque et récompense
+
+<img width="951" height="482" alt="image" src="https://github.com/user-attachments/assets/ab9c42d0-29ea-42c5-a362-8be8bd3b5f0e" />
 
 ## Fonctionnalités
 - 2 classes jouables: `Chevalier` et `Mage`
