@@ -8,6 +8,22 @@ from collections import namedtuple, deque
 if os.name == 'nt':
     import msvcrt
 
+def _getch_timeout(timeout_sec=0.18):
+    """Lit une touche avec timeout; retourne None si aucune touche."""
+    timeout_sec = max(0.0, float(timeout_sec))
+    if os.name == 'nt':
+        end = time.time() + timeout_sec
+        while time.time() < end:
+            if msvcrt.kbhit():
+                return msvcrt.getwch()
+            time.sleep(0.01)
+        return None
+    import select
+    r, _, _ = select.select([sys.stdin], [], [], timeout_sec)
+    if r:
+        return _getch_blocking()
+    return None
+
 def _getch_blocking():
     """Lit une touche immédiatement (Windows: msvcrt, Unix: termios)."""
     if os.name == 'nt':
@@ -31,8 +47,13 @@ def read_command(repeat_last_dir):
       ou ('quick_spell', index_1_based)
     """
     digits = ''
+    buffered_ch = None
     while True:
-        ch = _getch_blocking().lower()
+        if buffered_ch is not None:
+            ch = buffered_ch.lower()
+            buffered_ch = None
+        else:
+            ch = _getch_blocking().lower()
 
         # ignorer retours chariot/escapes
         if ch in ('\r', '\n', '\x1b'):
@@ -44,6 +65,15 @@ def read_command(repeat_last_dir):
             return ('quick_spell', QUICK_SPELL_KEYS[ch])
 
         if ch.isdigit():
+            # 1..0 en raccourcis sort (si touche seule), sinon nombre+direction pour déplacement.
+            if not digits:
+                peek = _getch_timeout(0.18)
+                if peek is None:
+                    slot = 10 if ch == '0' else int(ch)
+                    return ('quick_spell', slot)
+                digits = ch
+                buffered_ch = peek
+                continue
             digits += ch
             continue
 
@@ -322,8 +352,8 @@ CASINO_ICON = 'C'
 ALTAR_ICON = '+'
 LOCKED_DOOR_ICON = 'D'
 SAGE_ICON = 'S'
-HUD_CONTROLS = '[ZQSD/WASD] déplacer • E interagir • I inventaire • C stats • J journal • M grimoire • &é"\'(-/è_çà sorts rapides • X quitter'
-MENU_CONTROLS = "Commandes : ZQSD/WASD se déplacer • E interagir (PNJ/boutique/autel/casino/sorcier) • I inventaire • C stats • J journal • M grimoire • & é \" ' ( - / è _ ç à = sorts rapides • X quitter"
+HUD_CONTROLS = '[ZQSD/WASD] déplacer • E interagir • I inventaire • C stats • J journal • M grimoire • 1..0 ou &é"\'(-/è_çà sorts rapides • X quitter'
+MENU_CONTROLS = "Commandes : ZQSD/WASD se déplacer • E interagir (PNJ/boutique/autel/casino/sorcier) • I inventaire • C stats • J journal • M grimoire • 1..0 ou & é \" ' ( - / è _ ç à = sorts rapides • X quitter"
 QUICK_SPELL_KEYS = {
     '&': 1, 'é': 2, '"': 3, "'": 4, '(': 5, '-': 6,
     'è': 7, '_': 8, 'ç': 9, 'à': 10,
@@ -419,6 +449,25 @@ BALANCE = {
     'summon_spell_cooldown_floors': 5,
     'sage_reroll_cost_base': 240,
     'sage_reroll_cost_depth_mult': 20,
+
+    # Classe Mage
+    'mage_magic_drop_chance_base': 0.14,
+    'mage_magic_drop_chance_depth': 0.009,
+    'mage_magic_drop_chance_cap': 0.34,
+    'mage_magic_item_mult': 1.35,
+    'mage_pouv_stat_pct': 0.055,
+    'mage_pouv_per_level': 0.60,
+    'mage_level_hp_mult': 0.90,
+    'mage_level_atk_mult': 0.65,
+    'mage_level_def_mult': 0.65,
+    'mage_start_spell_slots': 3,
+    'mage_spell_slot_every_levels': 2,
+    'mage_level_pouv_gain': 1,
+    'mage_pouv_gain_every_levels': 2,
+    'mage_spell_drop_mult': 1.55,
+    'mage_spell_drop_cap': 0.12,
+    'mage_special_pouv_coeff': 0.015,
+    'mage_special_damage_mult': 0.78,
 }
 
 # Déplacements: ZQSD/WASD seulement
@@ -446,7 +495,7 @@ SPRITES = {
     'sorcier': [
         "                        .",
         "             /^\     .",
-        "       /\\    \"V\"",
+        "       /\    \ /",
         "      /__\    I      O  o",
         "     //..\\   I     .",
         "     \].`[/   I",
@@ -457,14 +506,26 @@ SPRITES = {
         "     |    |   I,  _________",
         "     |    |   I c(`       ')o,",
         "     |    l   I   \.     ,/,",
-        "   _/j  L l\_!   _//^---^\\_",   
+        "   _/j  L l\_ !  _//^---^\\_",   
     ],
-    
+    'mage': [
+        "       /)   <(o)>",
+        "      /~\     I",
+        "     /o_o\    I",
+        "   ~_\   /_~  I",
+        "   (_/`-`\_) (]",
+        "   //\___/j\/ |",
+        "   <>/   \ v  |",
+        "    \|_._||   |",
+        "    |<_I_>|   |",
+        "    | ||| |   |",
+        "  _/|/_|_\ \_ !",
+    ],
     'slime': [
     "       __",
     "     (o o  )",
     "    (       )",
-],
+    ],
     'goblin':[
         "  ,_, ",
         " (0_0)",
@@ -474,7 +535,7 @@ SPRITES = {
         "  | | ",
         "      "
     ],
-    'bat':   [
+    'bat':[
         "    =/\                 /\=",
         "    /  \'._  (\_/)   _.'/ \\",
         "   / .''._'--(o.o)--'_.''. \\",
@@ -552,7 +613,7 @@ SPELLS = [
     Spell('siphon', 'Siphon nocturne', 'Épique', 'combat', 'Dégâts modérés + soin partiel.', 6),
     Spell('rift', 'Faille courte', 'Épique', 'combat', 'Impact précis sur une faille arcanique.', 8),
     Spell('summon_skeleton', 'Invocation: Squelette', 'Épique', 'combat', 'Invoque un squelette combattant persistant.', 2),
-    Spell('summon_afterimage', 'Invocation: Image rémanante', 'Épique', 'combat', 'Clone défensif: n’attaque pas, intercepte 90% des dégâts.', 1),
+    Spell('summon_afterimage', 'Invocation: Image rémanante', 'Épique', 'combat', 'Clone défensif: n’attaque pas, intercepte 80% des dégâts.', 1),
     Spell('call_of_dead', 'Invocation: Appel des morts', 'Épique', 'combat', 'Tente de convertir un squelette ennemi dans votre horde.', 0),
     Spell('prospection', 'Prospection', 'Épique', 'explore', 'Transmute du mana en or.', 24),
     Spell('focus_sigil', 'Sceau de focalisation', 'Épique', 'explore', 'Focus arcanique pour l’étage courant.', 1),
@@ -603,6 +664,10 @@ RARE_ITEMS = [
     Item('Cape à capuche','armor',4,0,2,0.03,'Rare','Se fond dans l’ombre.',None),
     Item('Ceinturon solide','accessory',8,0,0,0.00,'Rare','Bon maintien.',None),
     Item('Médaillon poli','accessory',4,1,0,0.02,'Rare','Brille légèrement.',None),
+    Item('Bâton de flux','weapon',0,3,0,0.01,'Rare','Conduit mieux le mana.',{'pouv':3,'spell_power':0.12}),
+    Item('Talisman prismatique','accessory',3,0,1,0.01,'Rare','Réfraction arcanique stable.',{'pouv':2,'spell_crit':0.02}),
+    Item('Voile d’enchanteur','armor',5,0,2,0.00,'Rare','Filaments de protection magique.',{'pouv':2,'spell_defense':2}),
+    Item('Anneau des étincelles','accessory',1,1,0,0.01,'Rare','Surcharge les cantrips.',{'pouv':2,'spell_damage':2}),
 ]
 EPIC_ITEMS = [
     Item('Épée du vent','weapon',0,7,0,0.06,'Épique','Légère, précise.',{'dodge':0.05}),
@@ -624,6 +689,10 @@ EPIC_ITEMS = [
     Item('Griffe d’obsidienne','accessory',0,0,0,0.12,'Épique','Tranchant absolu.',None),
     Item('Pendentif vital','accessory',18,0,0,0.00,'Épique','Courage du cœur.',{'regen':2}),
     Item('Bottes du vent','accessory',6,0,3,0.00,'Épique','Foulée vive.',{'dodge':0.03}),
+    Item('Sceptre astral','weapon',0,4,0,0.03,'Épique','Amplifie les pics de puissance.',{'pouv':4,'spell_power':0.18,'spell_damage':2}),
+    Item('Manteau des comètes','armor',8,0,3,0.01,'Épique','Traînées de mana défensif.',{'pouv':3,'spell_defense':3,'spell_slots':1}),
+    Item('Sigil du thaumaturge','accessory',6,0,1,0.03,'Épique','Concentration difficile à rompre.',{'pouv':4,'spell_crit':0.03,'spell_power':0.12}),
+    Item('Orbe résonante','accessory',2,0,1,0.02,'Épique','Réverbère l’impact des sorts.',{'pouv':3,'spell_damage':3}),
 ]
 LEGENDARY_ITEMS = [
     Item('Couronne ancienne','accessory',20,2,2,0.05,'Légendaire','Attire les ennuis.',{'unlucky':0.10}),
@@ -646,6 +715,9 @@ LEGENDARY_ITEMS = [
     Item('Amulette du destin','accessory',8,0,0,0.12,'Légendaire','Faveur capricieuse.',None),
     Item('Couronne du zénith','accessory',22,3,3,0.05,'Légendaire','Apogée du pouvoir.',None),
     Item('Épée des millénaires','weapon',0,14,0,0.04,'Légendaire','A vu des empires naître.',None),
+    Item('Bâton archonte','weapon',0,5,0,0.04,'Légendaire','Autorité absolue sur le flux.',{'pouv':6,'spell_power':0.25,'spell_damage':4}),
+    Item('Égide des runes vives','armor',12,0,5,0.02,'Légendaire','Les glyphes absorbent l’impact.',{'pouv':5,'spell_defense':4,'spell_slots':1}),
+    Item('Couronne de l’érudit noir','accessory',8,1,1,0.05,'Légendaire','Savoir dangereux et fertile.',{'pouv':7,'spell_crit':0.05,'spell_power':0.20}),
 ]
 CURSED_ODDITIES = [
     Item('Sceau d’apprenti','accessory',3,0,1,0.01,'Rare','Canalisation de base.',{'pouv':1,'spell_power':0.10}),
@@ -656,6 +728,9 @@ CURSED_ODDITIES = [
     Item('Codex fragmenté','accessory',3,0,1,0.01,'Rare','Fragments d’incantations.',{'pouv':2,'spell_slots':1,'spell_power':0.08}),
     Item('Grimoire ferré','armor',7,0,3,0.00,'Rare','Plaques gravées de glyphes.',{'pouv':2,'spell_defense':1,'spell_slots':1}),
     Item('Bague du pyromant','accessory',0,2,0,0.02,'Rare','Renforce les sorts offensifs.',{'pouv':3,'spell_damage':2,'spell_power':0.06}),
+    Item('Opale du ritualiste','accessory',2,0,1,0.02,'Étrange','Le flux fluctue et mord.',{'pouv':5,'spell_power':0.20,'unlucky':0.05,'cursed':True}),
+    Item('Manteau de cendre froide','armor',9,0,3,0.00,'Étrange','Excellent canal, mauvais présage.',{'pouv':4,'spell_defense':3,'cursed':True}),
+    Item('Relique de l’oubli','weapon',0,4,0,0.03,'Étrange','Plus elle brille, plus le sort vacille.',{'pouv':5,'spell_damage':3,'spell_crit':0.03,'cursed':True}),
 ]
 
 def _rebalance_item_pool(items):
@@ -680,6 +755,12 @@ def _rebalance_item_pool(items):
         'lifesteal': {'Épique': 0.14, 'Légendaire': 0.16, 'Étrange': 0.14},
         'dodge': {'Rare': 0.04, 'Épique': 0.05, 'Légendaire': 0.06, 'Étrange': 0.05},
         'poison_on_hit': {'Étrange': 2},
+        'pouv': {'Rare': 3, 'Épique': 5, 'Légendaire': 7, 'Étrange': 6},
+        'spell_power': {'Rare': 0.12, 'Épique': 0.18, 'Légendaire': 0.25, 'Étrange': 0.22},
+        'spell_damage': {'Rare': 2, 'Épique': 3, 'Légendaire': 4, 'Étrange': 3},
+        'spell_defense': {'Rare': 2, 'Épique': 3, 'Légendaire': 4, 'Étrange': 3},
+        'spell_slots': {'Rare': 1, 'Épique': 1, 'Légendaire': 2, 'Étrange': 1},
+        'spell_crit': {'Rare': 0.02, 'Épique': 0.03, 'Légendaire': 0.05, 'Étrange': 0.04},
     }
 
     out = []
@@ -865,8 +946,25 @@ class Character:
 
 class Player(Character):
     def __init__(self,name,klass='Chevalier'):
-        # PV de base réduits pour une difficulté plus élevée
-        base = dict(name=name,hp=36,atk=10,defense=5,crit=0.06)
+        k = (klass or 'Chevalier').strip().lower()
+        if k == 'mage':
+            base = dict(name=name,hp=24,atk=6,defense=2,crit=0.08)
+            self.map_icon = '&'
+            self.sprite = SPRITES.get('mage', SPRITES.get('knight', []))
+            self.level_gain_mult = {
+                'hp': float(BALANCE.get('mage_level_hp_mult', 0.90)),
+                'atk': float(BALANCE.get('mage_level_atk_mult', 0.65)),
+                'def': float(BALANCE.get('mage_level_def_mult', 0.65)),
+            }
+            self.mage_core = True
+            klass = 'Mage'
+        else:
+            # PV de base réduits pour une difficulté plus élevée
+            base = dict(name=name,hp=36,atk=10,defense=5,crit=0.06)
+            self.map_icon = PLAYER_ICON
+            self.sprite = SPRITES.get('knight', [])
+            self.level_gain_mult = {'hp': 1.0, 'atk': 1.0, 'def': 1.0}
+            self.mage_core = False
         super().__init__(**base)
         self.klass=klass
         self.level=1; self.xp=0; self.gold=40
@@ -896,6 +994,12 @@ class Player(Character):
         self.spell_scrolls = []
         self.spells_cast_this_floor = 0
         self.sage_depths_visited = set()
+        self.altar_dynamic_effects = []
+        if self.mage_core:
+            self.spellbook_unlocked = True
+            starter = _pick_spell_ids(0, set(), count=1, source='loot')
+            self.spell_scrolls = starter[:] if starter else ['pulse']
+            self.passive_specials['pouv'] = max(3, int(self.passive_specials.get('pouv', 0)))
 
     def equip(self,item):
         slot=item.slot; old=self.equipment.get(slot)
@@ -908,16 +1012,102 @@ class Player(Character):
         self.atk=max(0,self.atk+sign*item.atk_bonus)
         self.defense=max(0,self.defense+sign*item.def_bonus)
         self.crit=max(0.0,min(0.9,self.crit+sign*item.crit_bonus))
+        self.recompute_altar_dynamic_effects()
+
+    def _altar_effects_for_attr(self, attr):
+        return [e for e in self.altar_dynamic_effects if e.get('attr') == attr]
+
+    def _altar_dynamic_base(self, attr):
+        effects = self._altar_effects_for_attr(attr)
+        current = getattr(self, attr)
+        applied = sum(float(e.get('applied', 0.0)) for e in effects)
+        return float(current) - applied
+
+    def recompute_altar_dynamic_effects(self):
+        if not self.altar_dynamic_effects:
+            return
+        for attr in ('max_hp', 'atk', 'defense', 'crit'):
+            effects = self._altar_effects_for_attr(attr)
+            if not effects:
+                continue
+            current = float(getattr(self, attr))
+            prev_total = sum(float(e.get('applied', 0.0)) for e in effects)
+            base = current - prev_total
+            target_parts = []
+            attr_floor = 0.0
+            for e in effects:
+                pct = float(e.get('pct', 0.0))
+                min_delta = float(e.get('min_delta', 0.0))
+                floor_value = float(e.get('floor_value', 0.0))
+                attr_floor = max(attr_floor, floor_value)
+                calc_base = max(floor_value, base)
+                delta = max(min_delta, calc_base * pct)
+                if not bool(e.get('is_float', False)):
+                    delta = float(int(round(delta)))
+                sign = 1.0 if e.get('kind') == 'gain' else -1.0
+                target_parts.append(sign * delta)
+            target_total = sum(target_parts)
+            new_value = base + target_total
+            if attr == 'crit':
+                new_value = max(0.0, min(0.9, round(new_value, 3)))
+            else:
+                new_value = max(attr_floor, float(int(round(new_value))))
+            setattr(self, attr, new_value if attr == 'crit' else int(new_value))
+            realized_total = float(getattr(self, attr)) - base
+            if abs(target_total) < 1e-9:
+                for e in effects:
+                    e['applied'] = 0.0
+                continue
+            ratio = realized_total / target_total
+            if attr == 'crit':
+                for i, e in enumerate(effects):
+                    val = target_parts[i] * ratio
+                    e['applied'] = round(val, 3)
+            else:
+                scaled = [int(round(v * ratio)) for v in target_parts]
+                drift = int(round(realized_total)) - sum(scaled)
+                if scaled and drift != 0:
+                    scaled[-1] += drift
+                for i, e in enumerate(effects):
+                    e['applied'] = float(scaled[i])
+        self.hp = min(self.hp, int(self.max_hp))
+
+    def add_altar_dynamic_effect(self, attr, pct, kind='gain', min_delta=1, floor_value=0, is_float=False):
+        effect = {
+            'attr': attr,
+            'pct': float(pct),
+            'kind': 'gain' if kind == 'gain' else 'loss',
+            'min_delta': float(min_delta),
+            'floor_value': float(floor_value),
+            'is_float': bool(is_float),
+            'applied': 0.0,
+        }
+        self.altar_dynamic_effects.append(effect)
+        self.recompute_altar_dynamic_effects()
+        return float(effect.get('applied', 0.0))
     def all_specials(self):
         specs={}
         for k,v in self.passive_specials.items():
             specs[k] = specs.get(k, 0) + v if isinstance(v, (int, float)) else v
         for k,v in self.floor_specials.items():
             specs[k] = specs.get(k, 0) + v if isinstance(v, (int, float)) else v
+        mage_magic_mult = float(BALANCE.get('mage_magic_item_mult', 1.35)) if self.klass == 'Mage' else 1.0
+        # Le Mage ne doit pas avoir de multiplicateur de dégâts de sorts propre à la classe.
+        # On conserve le bonus de classe sur POUV et l'utilitaire magique, mais pas sur spell_power/spell_damage.
+        mage_magic_keys = {'pouv', 'spell_defense', 'spell_slots', 'spell_crit'}
         for it in self.equipment.values():
             if it and it.special:
+                is_magic = is_magic_item(it)
                 for k,v in it.special.items():
-                    if isinstance(v,(int,float)): specs[k]=specs.get(k,0)+v
+                    if isinstance(v,(int,float)):
+                        add_v = v
+                        if self.klass == 'Mage' and is_magic and k in mage_magic_keys:
+                            add_v = v * mage_magic_mult
+                            if isinstance(v, int):
+                                add_v = int(round(add_v))
+                            else:
+                                add_v = round(add_v, 3)
+                        specs[k]=specs.get(k,0)+add_v
                     else: specs[k]=True
         return specs
 
@@ -950,6 +1140,7 @@ class Player(Character):
         if sm:
             summon_txt = f"Invocation:{sm.get('name','?')} {sm.get('hp',0)}/{sm.get('max_hp',0)}"
         parts = [
+            f"Classe:{self.klass}",
             f"Niv:{self.level}",
             f"{color_label('HP')}:{hp_gauge_text(self.hp, self.max_hp)}",
             f"{color_label('ATK')}:{color_val('ATK', self.atk + self.temp_buffs['atk'])}",
@@ -970,18 +1161,79 @@ class Player(Character):
         while self.xp >= BALANCE['level_xp_threshold']:
             self.xp -= BALANCE['level_xp_threshold']
             self.level += 1
-            self.max_hp += BALANCE['level_hp_gain']
-            self.atk    += BALANCE['level_atk_gain']
-            self.defense+= BALANCE['level_def_gain']
+            if self.klass == 'Mage':
+                hp_gain = 1
+                atk_gain = 1
+                def_gain = 0.20
+                pouv_gain = 0
+                pouv_every = max(1, int(BALANCE.get('mage_pouv_gain_every_levels', 2)))
+                if self.level % pouv_every == 0:
+                    pouv_gain = int(BALANCE.get('mage_level_pouv_gain', 1))
+                    self.passive_specials['pouv'] = int(self.passive_specials.get('pouv', 0)) + pouv_gain
+            else:
+                hp_gain = max(1, int(round(BALANCE['level_hp_gain'] * float(self.level_gain_mult.get('hp', 1.0)))))
+                atk_gain = max(1, int(round(BALANCE['level_atk_gain'] * float(self.level_gain_mult.get('atk', 1.0)))))
+                def_gain = max(0.2, float(BALANCE['level_def_gain']) * float(self.level_gain_mult.get('def', 1.0)))
+                pouv_gain = 0
+            self.max_hp += hp_gain
+            self.atk    += atk_gain
+            self.defense+= def_gain
+            self.recompute_altar_dynamic_effects()
 
             # Soin partiel à chaque montée de niveau
             heal = int(self.max_hp * BALANCE.get('level_heal_ratio', 0.50))
             self.hp = min(self.max_hp, self.hp + heal)
 
-            print(c(f"*** Niveau {self.level}! +HP:{BALANCE['level_hp_gain']} "f"+ATK:{BALANCE['level_atk_gain']} +DEF:{BALANCE['level_def_gain']}"f"(+{heal} PV) ***", Ansi.BRIGHT_YELLOW))
+            pouv_txt = f" +POUV:{pouv_gain}" if pouv_gain > 0 else ""
+            print(c(f"*** Niveau {self.level}! +HP:{hp_gain} +ATK:{atk_gain} +DEF:{def_gain:.2f}{pouv_txt}(+{heal} PV) ***", Ansi.BRIGHT_YELLOW))
             time.sleep(0.6)
 
 CONSUMABLE_STACK_MAX = 3
+FRAGMENT_STACK_MAX = 5
+
+def _stack_max_for_consumable(cns):
+    if isinstance(cns, Consumable) and str(getattr(cns, 'effect', '')).startswith('frag_'):
+        return FRAGMENT_STACK_MAX
+    return CONSUMABLE_STACK_MAX
+
+def _grant_fragment_permanent(player, cns):
+    if not isinstance(cns, Consumable):
+        return False
+    eff = str(getattr(cns, 'effect', ''))
+    power = getattr(cns, 'power', 0)
+    if isinstance(power, (tuple, list)) and len(power) >= 1:
+        amount = float(power[0])
+    else:
+        amount = float(power) if isinstance(power, (int, float)) else 0.0
+    key_map = {
+        'frag_atk_pct': 'perm_frag_atk_pct',
+        'frag_def_pct': 'perm_frag_def_pct',
+        'frag_spell_pct': 'perm_frag_spell_pct',
+        'frag_crit_flat': 'perm_frag_crit_flat',
+    }
+    pkey = key_map.get(eff)
+    if not pkey or amount <= 0:
+        return False
+    cur = float(player.passive_specials.get(pkey, 0.0))
+    player.passive_specials[pkey] = round(cur + amount, 4)
+    return True
+
+def _try_convert_full_fragment_stack_to_permanent(player, cns):
+    if not isinstance(cns, Consumable):
+        return False
+    if not str(getattr(cns, 'effect', '')).startswith('frag_'):
+        return False
+    stacks = _consumable_stacks(player)
+    max_stack = _stack_max_for_consumable(cns)
+    for i, st in enumerate(list(stacks)):
+        if st.get('item') == cns and int(st.get('qty', 0)) >= max_stack:
+            # Conversion: le stack plein est consommé pour un bonus permanent (valeur d'un fragment).
+            st['qty'] -= max_stack
+            if st['qty'] <= 0:
+                stacks.pop(i)
+            _grant_fragment_permanent(player, cns)
+            return True
+    return False
 
 def _normalize_consumables(player):
     """
@@ -998,7 +1250,7 @@ def _normalize_consumables(player):
 
     def _push_one(cns):
         for st in normalized:
-            if st['item'] == cns and st['qty'] < CONSUMABLE_STACK_MAX:
+            if st['item'] == cns and st['qty'] < _stack_max_for_consumable(cns):
                 st['qty'] += 1
                 return
         normalized.append({'item': cns, 'qty': 1})
@@ -1054,7 +1306,7 @@ def _add_consumable(player, cns, qty=1):
     for _ in range(max(0, int(qty))):
         placed = False
         for st in stacks:
-            if st['item'] == cns and st['qty'] < CONSUMABLE_STACK_MAX:
+            if st['item'] == cns and st['qty'] < _stack_max_for_consumable(cns):
                 st['qty'] += 1
                 placed = True
                 break
@@ -1065,6 +1317,7 @@ def _add_consumable(player, cns, qty=1):
             placed = True
         if placed:
             added += 1
+            _try_convert_full_fragment_stack_to_permanent(player, cns)
     return added
 
 def _consume_consumable_at(player, idx):
@@ -1185,7 +1438,9 @@ def scale_monster(mdef: dict, player, depth: int, elite: bool=False) -> dict:
 
 # ========================== LOOT & SHOP HELPERS ==========================
 class DummyPlayer:
-    def __init__(self): self.equipment={'weapon':None,'armor':None,'accessory':None}
+    def __init__(self):
+        self.equipment={'weapon':None,'armor':None,'accessory':None}
+        self.klass='Chevalier'
     def all_specials(self): return {}
 
 def _tiered_value(depth, tiers):
@@ -1225,15 +1480,39 @@ def _summon_spell_cd_left(player, sid):
 
 def _spell_cast_limit(player):
     specs = player.all_specials()
-    base = 1 + player.level // 4
+    if getattr(player, 'klass', '') == 'Mage':
+        base = max(1, int(BALANCE.get('mage_start_spell_slots', 3)))
+        every = max(1, int(BALANCE.get('mage_spell_slot_every_levels', 5)))
+        base += max(0, (player.level - 1) // every)
+    else:
+        base = 1 + player.level // 4
     bonus = int(specs.get('spell_slots', 0))
     return max(1, base + bonus)
 
 def _spell_casts_left(player):
     return max(0, _spell_cast_limit(player) - player.spells_cast_this_floor)
 
+def _spell_pouv_breakdown(player):
+    specs_pouv = max(0.0, float(player.all_specials().get('pouv', 0)))
+    passive_floor_pouv = max(0.0, float(getattr(player, 'passive_specials', {}).get('pouv', 0))) + max(0.0, float(getattr(player, 'floor_specials', {}).get('pouv', 0)))
+    equip_pouv = max(0.0, specs_pouv - passive_floor_pouv)
+    class_bonus = 0.0
+    if getattr(player, 'klass', '') == 'Mage':
+        stat_pct = float(BALANCE.get('mage_pouv_stat_pct', 0.055))
+        per_lvl = float(BALANCE.get('mage_pouv_per_level', 0.60))
+        stats_global = float(max(0, player.max_hp) + max(0, player.atk) + max(0, player.defense))
+        class_bonus = max(1.0, stats_global * stat_pct) + max(0.0, (player.level - 1) * per_lvl)
+    total = max(0, int(round(specs_pouv + class_bonus)))
+    return {
+        'total': total,
+        'specs': specs_pouv,
+        'passive_floor': passive_floor_pouv,
+        'equipment': equip_pouv,
+        'class_bonus': class_bonus,
+    }
+
 def _spell_pouv(player):
-    return max(0, int(player.all_specials().get('pouv', 0)))
+    return int(_spell_pouv_breakdown(player).get('total', 0))
 
 def _explore_spell_duration(player):
     # Base 1 étage, puis +1 tous les 2 points de POUV (cap pour éviter l'abus).
@@ -1263,6 +1542,25 @@ def _pick_teleport_destination(floor, player_pos):
     candidates.sort(key=lambda p: abs(p[0] - player_pos[0]) + abs(p[1] - player_pos[1]))
     return candidates[0]
 
+def _explore_stat_spell_values(player, sid):
+    """
+    Valeurs effectives des sorts d'amélioration de stats en exploration.
+    Scalées par POUV (donc naturellement plus fortes pour le Mage).
+    """
+    sp = _spell_by_id(sid)
+    if not sp:
+        return {}
+    pouv = max(0, _spell_pouv(player))
+    if sid in ('arcane_skin', 'warding_mist'):
+        pouv_mult = 1.0 + min(0.50, pouv * 0.015)
+        bonus = max(1, int(round(sp.power * _spell_power_mult(player) * pouv_mult)))
+        return {'spell_defense': bonus}
+    if sid == 'focus_sigil':
+        crit_gain = round(0.01 + min(0.05, pouv * 0.0015), 3)
+        power_gain = round(0.10 + min(0.30, pouv * 0.01), 3)
+        return {'spell_crit': crit_gain, 'spell_power': power_gain}
+    return {}
+
 def _apply_explore_spell_specials(player, sid):
     sp = _spell_by_id(sid)
     if not sp or sp.kind != 'explore':
@@ -1271,11 +1569,12 @@ def _apply_explore_spell_specials(player, sid):
         bonus = int(round(sp.power * _spell_power_mult(player)))
         player.floor_specials['fov_bonus'] = max(player.floor_specials.get('fov_bonus', 0), max(0, bonus))
     elif sid in ('arcane_skin', 'warding_mist'):
-        bonus = max(1, int(round(sp.power * _spell_power_mult(player))))
+        bonus = int(_explore_stat_spell_values(player, sid).get('spell_defense', 1))
         player.floor_specials['spell_defense'] = max(player.floor_specials.get('spell_defense', 0), max(0, bonus))
     elif sid == 'focus_sigil':
-        player.floor_specials['spell_crit'] = max(player.floor_specials.get('spell_crit', 0.0), 0.01)
-        player.floor_specials['spell_power'] = max(player.floor_specials.get('spell_power', 0.0), 0.10)
+        vals = _explore_stat_spell_values(player, sid)
+        player.floor_specials['spell_crit'] = max(player.floor_specials.get('spell_crit', 0.0), float(vals.get('spell_crit', 0.01)))
+        player.floor_specials['spell_power'] = max(player.floor_specials.get('spell_power', 0.0), float(vals.get('spell_power', 0.10)))
 
 def _rebuild_floor_magic_from_active_spells(player):
     player.floor_specials = {}
@@ -1289,6 +1588,13 @@ def _spell_power_mult(player):
     lvl = max(0, player.level - 1)
     # La magie scale surtout sur POUV, avec un léger bonus du niveau.
     return 1.0 + (pouv * 0.08) + (lvl * 0.006) + max(0.0, float(specs.get('spell_power', 0.0)))
+
+def _spell_damage_mult(player):
+    specs = player.all_specials()
+    pouv = _spell_pouv(player)
+    lvl = max(0, player.level - 1)
+    # Scaling dégâts volontairement plus doux que le scaling utilitaire.
+    return 1.0 + (pouv * 0.045) + (lvl * 0.005) + max(0.0, float(specs.get('spell_power', 0.0)))
 
 def _spell_scroll_price(spell, depth):
     base = {'Commun': 95, 'Rare': 180, 'Épique': 320, 'Légendaire': 560}.get(spell.rarity, 220)
@@ -1370,6 +1676,20 @@ def random_item(depth, player):
     if not pool:
         # retourne un commun “safe” au cas où
         return Item('Objet inconnu', 'weapon', 0, 1, 0, 0.0, 'Commun', 'Placeholder.', None)
+
+    klass = str(getattr(player, 'klass', '')).lower()
+    if klass == 'mage':
+        extra = float(BALANCE.get('mage_magic_drop_chance_depth', 0.009)) * max(0, depth)
+        force_magic_chance = min(
+            float(BALANCE.get('mage_magic_drop_chance_cap', 0.34)),
+            float(BALANCE.get('mage_magic_drop_chance_base', 0.14)) + extra
+        )
+        if random.random() < force_magic_chance:
+            magic_pool = [it for it in pool if is_magic_item(it)]
+            if not magic_pool:
+                magic_pool = [it for it in ALL_ITEMS if isinstance(it, Item) and getattr(it, 'rarity', None) == r and is_magic_item(it)]
+            if magic_pool:
+                return random.choice(magic_pool)
 
     return random.choice(pool)
 
@@ -1551,7 +1871,7 @@ def _summon_from_spell(player, sid):
             'defense': max(0, int(player.defense * 0.25) + int(pouv * 0.3)),
             'crit': 0.0,
             'can_attack': False,
-            'guard_ratio': 0.90,
+            'guard_ratio': 0.80,
             'source_sid': sid,
         }
 
@@ -1865,6 +2185,53 @@ def upgrade_item(it):
         special=special,
     )
 
+def _casino_upgrade_equipped_item(player, slot, upgrade_cost, upgrade_break_chance, use_fragment_guard=False):
+    """
+    Tente d'upgrader l'objet équipé dans `slot` de manière transactionnelle.
+    Ne consomme jamais d'or si l'upgrade est bloquée.
+    """
+    old = player.equipment.get(slot)
+    if old is None:
+        return {'status': 'blocked_missing'}
+    if player.gold < upgrade_cost:
+        return {'status': 'blocked_gold'}
+    if not _can_upgrade_item(old):
+        return {'status': 'blocked_cap', 'item': old}
+
+    item_break_chance = _upgrade_break_chance_for_item(old, upgrade_break_chance)
+    charged = False
+    removed_mods = False
+    try:
+        player.gold -= upgrade_cost
+        charged = True
+        player._apply_modifiers(old, remove=True)
+        removed_mods = True
+
+        if random.random() < item_break_chance:
+            if use_fragment_guard:
+                frag_used = _consume_fragment_guard(player)
+                player.equipment[slot] = old
+                player._apply_modifiers(old, remove=False)
+                return {'status': 'guarded', 'item': old, 'frag': frag_used}
+            player.equipment[slot] = None
+            return {'status': 'broke', 'item': old}
+
+        new_item = upgrade_item(old)
+        player.equipment[slot] = new_item
+        player._apply_modifiers(new_item, remove=False)
+        return {'status': 'upgraded', 'old': old, 'new': new_item}
+    except Exception as e:
+        # rollback complet: stats + équipement + or
+        if removed_mods:
+            try:
+                player.equipment[slot] = old
+                player._apply_modifiers(old, remove=False)
+            except Exception:
+                pass
+        if charged:
+            player.gold += upgrade_cost
+        return {'status': 'error', 'error': repr(e), 'item': old}
+
 def open_casino(player, depth):
     BOX_W = max(140, MAP_W + 44)
     gamble_cost = BALANCE['casino_gamble_cost_base'] + depth * 2
@@ -1932,15 +2299,21 @@ def open_casino(player, depth):
                 print("Choix invalide."); time.sleep(0.6); continue
             idx = int(pick) - 1
             slot, old = equipped[idx]
+            # Revalidation sur l'équipement réel au moment de confirmer.
+            old = player.equipment.get(slot)
+            if old is None:
+                draw_box("Upgrade bloqué", [f"Aucun objet équipé dans le slot {slot}."], width=BOX_W)
+                pause()
+                continue
             if not _can_upgrade_item(old):
                 draw_box("Upgrade bloqué", [f"{old.name}: cap d'amélioration atteint ({_item_upgrade_cap_text(old)})."], width=BOX_W)
                 pause()
                 continue
 
-            item_break_chance = _upgrade_break_chance_for_item(old, upgrade_break_chance)
             use_fragment_guard = False
             is_cursed = bool((getattr(old, 'special', {}) or {}).get('cursed', False))
             if is_cursed:
+                item_break_chance = _upgrade_break_chance_for_item(old, upgrade_break_chance)
                 if _has_fragment_guard(player):
                     ask = input("Objet cursed: utiliser 1 fragment pour éviter la casse en cas d'échec ? (o/n) ").strip().lower()
                     use_fragment_guard = (ask in ('o', 'y'))
@@ -1952,28 +2325,38 @@ def open_casino(player, depth):
                     ], width=BOX_W)
                     time.sleep(0.8)
 
-            player.gold -= upgrade_cost
-            player._apply_modifiers(old, remove=True)
-            if random.random() < item_break_chance:
-                if use_fragment_guard:
-                    frag_used = _consume_fragment_guard(player)
-                    player.equipment[slot] = old
-                    player._apply_modifiers(old, remove=False)
-                    frag_name = frag_used.name if frag_used else "fragment"
-                    draw_box("Protection activée", [
-                        f"Tentative ratée sur {old.name}, mais l'objet ne casse pas.",
-                        f"Consommé: {frag_name}.",
-                    ], width=BOX_W)
-                    pause()
-                    continue
-                player.equipment[slot] = None
-                draw_box("Upgrade raté", [f"{old.name} se brise pendant l'amélioration.", "Le risque du casino..."], width=BOX_W)
-                pause()
-                continue
-            new_item = upgrade_item(old)
-            player.equipment[slot] = new_item
-            player._apply_modifiers(new_item, remove=False)
-            draw_box("Upgrade réussi", [f"{old.name} -> {new_item.name}"], width=BOX_W)
+            result = _casino_upgrade_equipped_item(
+                player, slot, upgrade_cost, upgrade_break_chance, use_fragment_guard=use_fragment_guard
+            )
+            status = result.get('status')
+            if status == 'blocked_cap':
+                itb = result.get('item')
+                draw_box("Upgrade bloqué", [f"{itb.name}: cap d'amélioration atteint ({_item_upgrade_cap_text(itb)})."], width=BOX_W)
+            elif status == 'blocked_gold':
+                draw_box("Upgrade bloqué", ["Pas assez d'or pour l'amélioration."], width=BOX_W)
+            elif status == 'blocked_missing':
+                draw_box("Upgrade bloqué", [f"Aucun objet équipé dans le slot {slot}."], width=BOX_W)
+            elif status == 'guarded':
+                old_it = result.get('item')
+                frag_used = result.get('frag')
+                frag_name = frag_used.name if frag_used else "fragment"
+                draw_box("Protection activée", [
+                    f"Tentative ratée sur {old_it.name}, mais l'objet ne casse pas.",
+                    f"Consommé: {frag_name}.",
+                ], width=BOX_W)
+            elif status == 'broke':
+                old_it = result.get('item')
+                draw_box("Upgrade raté", [f"{old_it.name} se brise pendant l'amélioration.", "Le risque du casino..."], width=BOX_W)
+            elif status == 'upgraded':
+                old_it = result.get('old')
+                new_it = result.get('new')
+                draw_box("Upgrade réussi", [f"{old_it.name} -> {new_it.name}"], width=BOX_W)
+            else:
+                draw_box("Erreur upgrade", [
+                    "Une erreur est survenue. L'opération a été annulée.",
+                    "Aucun or n'a été perdu.",
+                    str(result.get('error', 'inconnue')),
+                ], width=BOX_W)
             pause()
             continue
         print("Commande inconnue."); time.sleep(0.6)
@@ -2040,34 +2423,24 @@ def open_altar(player, depth):
         return False
 
     def _gain_int_pct(attr, pct, min_gain=1, floor_value=0):
-        base = max(floor_value, int(round(getattr(player, attr))))
-        delta = max(min_gain, int(round(base * pct)))
-        setattr(player, attr, base + delta)
-        return delta, base
+        base = max(floor_value, int(round(player._altar_dynamic_base(attr))))
+        applied = player.add_altar_dynamic_effect(attr, pct, kind='gain', min_delta=min_gain, floor_value=floor_value, is_float=False)
+        return int(round(max(0.0, applied))), base
 
     def _lose_int_pct(attr, pct, min_loss=1, floor_value=0):
-        base = max(floor_value, int(round(getattr(player, attr))))
-        delta = max(min_loss, int(round(base * pct)))
-        new_val = max(floor_value, base - delta)
-        real_loss = base - new_val
-        setattr(player, attr, new_val)
-        return real_loss, base
+        base = max(floor_value, int(round(player._altar_dynamic_base(attr))))
+        applied = player.add_altar_dynamic_effect(attr, pct, kind='loss', min_delta=min_loss, floor_value=floor_value, is_float=False)
+        return int(round(max(0.0, -applied))), base
 
     def _gain_crit_pct(pct, min_gain=0.01):
-        base = max(0.0, player.crit)
-        delta = max(min_gain, base * pct)
-        new_crit = min(0.9, round(base + delta, 3))
-        real_gain = round(new_crit - base, 3)
-        player.crit = new_crit
-        return real_gain, base
+        base = max(0.0, player._altar_dynamic_base('crit'))
+        applied = player.add_altar_dynamic_effect('crit', pct, kind='gain', min_delta=min_gain, floor_value=0, is_float=True)
+        return round(max(0.0, applied), 3), base
 
     def _lose_crit_pct(pct, min_loss=0.01):
-        base = max(0.0, player.crit)
-        delta = max(min_loss, base * pct)
-        new_crit = max(0.0, round(base - delta, 3))
-        real_loss = round(base - new_crit, 3)
-        player.crit = new_crit
-        return real_loss, base
+        base = max(0.0, player._altar_dynamic_base('crit'))
+        applied = player.add_altar_dynamic_effect('crit', pct, kind='loss', min_delta=min_loss, floor_value=0, is_float=True)
+        return round(max(0.0, -applied), 3), base
 
     def _gain_special_int_pct(key, pct, min_gain=1):
         base = max(0, int(round(player.all_specials().get(key, 0))))
@@ -2133,7 +2506,7 @@ def open_altar(player, depth):
         pause()
         return True
     if selected_kind == "curse":
-        # Intensité figée lors de la révélation des choix.
+        # Intensité recalculée dynamiquement selon les stats actuelles du joueur.
         tier = selected_option["tier"]
         mult = {"moderee": 0.85, "forte": 1.00, "brutale": 1.25}[tier]
 
@@ -2227,12 +2600,49 @@ def item_summary(it):
     return (f"{it.name} [{slot_label}] [{it.rarity}]{magic_tag} — {it.description} | "
             f"{s_hp} {s_atk} {s_def} {s_crit}{s_pouv}" + effect_str(it.special))
 
+def item_brief_stats(it):
+    """Affichage compact pour shop/coffres: bonus + effets, sans légende/description."""
+    if it is None:
+        return '—'
+    if isinstance(it, Consumable):
+        return item_summary(it)
+    slot_label = {'weapon': 'Arme', 'armor': 'Armure', 'accessory': 'Accessoire'}.get(it.slot, it.slot)
+    magic_tag = " [Magique]" if is_magic_item(it) else ""
+    stats_parts = []
+    if it.hp_bonus:
+        stats_parts.append(f"HP{it.hp_bonus:+}")
+    if it.atk_bonus:
+        stats_parts.append(f"ATK{it.atk_bonus:+}")
+    if it.def_bonus:
+        stats_parts.append(f"DEF{it.def_bonus:+}")
+    if abs(float(it.crit_bonus)) > 1e-9:
+        stats_parts.append(f"CRIT{it.crit_bonus:+.2f}")
+    pouv_bonus = item_pouv(it)
+    if pouv_bonus:
+        stats_parts.append(f"POUV{pouv_bonus:+}")
+    stats_txt = " ".join(stats_parts) if stats_parts else "Aucun bonus de stats"
+    eff_txt = effect_str(it.special)
+    return f"{it.name} [{slot_label}] [{it.rarity}]{magic_tag} | {stats_txt}{eff_txt}"
+
+def item_compact_header(it):
+    if not isinstance(it, Item):
+        return item_brief_stats(it)
+    slot_label = {'weapon': 'Arme', 'armor': 'Armure', 'accessory': 'Accessoire'}.get(it.slot, it.slot)
+    magic_tag = " [Magique]" if is_magic_item(it) else ""
+    return f"{it.name} [{slot_label}] [{it.rarity}]{magic_tag}"
+
 def open_stats_interface(player):
     eq_items = [it for it in player.equipment.values() if it]
     eq_hp = sum(it.hp_bonus for it in eq_items)
     eq_atk = sum(it.atk_bonus for it in eq_items)
     eq_def = sum(it.def_bonus for it in eq_items)
     eq_crit = sum(it.crit_bonus for it in eq_items)
+    pouv_info = _spell_pouv_breakdown(player)
+    pouv_total = int(pouv_info.get('total', 0))
+    pouv_specs = float(pouv_info.get('specs', 0.0))
+    pouv_passive = float(pouv_info.get('passive_floor', 0.0))
+    pouv_equip = float(pouv_info.get('equipment', 0.0))
+    pouv_class = float(pouv_info.get('class_bonus', 0.0))
 
     core_rows = [
         c("Stats actuelles", Ansi.BRIGHT_WHITE),
@@ -2240,7 +2650,7 @@ def open_stats_interface(player):
         f"ATK: {_fmt_num(player.atk)} (+temp {_fmt_num(player.temp_buffs['atk'])})",
         f"DEF: {_fmt_num(player.defense)}",
         f"CRIT: {_fmt_num(player.crit)}",
-        f"POUV: {_fmt_num(_spell_pouv(player))}",
+        f"POUV: {_fmt_num(pouv_total)}",
         f"OR: {_fmt_num(player.gold)}",
         "",
         c("Répartition (total = hors équipement + équipement)", Ansi.BRIGHT_CYAN),
@@ -2248,6 +2658,8 @@ def open_stats_interface(player):
         f"ATK: {_fmt_num(player.atk)} = {_fmt_num(player.atk - eq_atk)} + {_fmt_num(eq_atk)}",
         f"DEF: {_fmt_num(player.defense)} = {_fmt_num(player.defense - eq_def)} + {_fmt_num(eq_def)}",
         f"CRIT: {_fmt_num(player.crit)} = {_fmt_num(player.crit - eq_crit)} + {_fmt_num(eq_crit)}",
+        f"POUV (sources): {_fmt_num(pouv_total)} = specs({_fmt_num(pouv_specs)}) + classe({_fmt_num(pouv_class)})",
+        f"  ↳ specs({_fmt_num(pouv_specs)}) = passifs/sol({_fmt_num(pouv_passive)}) + équipement({_fmt_num(pouv_equip)})",
     ]
 
     equip_rows = [c("Sources équipement", Ansi.BRIGHT_MAGENTA)]
@@ -2423,6 +2835,7 @@ def open_inventory(player):
         conso_rows.append('')
         conso_rows.append(c('Actions consommables :', Ansi.BRIGHT_WHITE))
         conso_rows.append(" - uc<num> : utiliser le consommable")
+        conso_rows.append(" - ucm<num> / ucmax<num> : utiliser toute la pile du consommable")
         conso_rows.append(" - dc<num> : jeter 1 unité du consommable")
 
         # === Rendu ===
@@ -2470,7 +2883,34 @@ def open_inventory(player):
                 print("Index d’objet invalide."); time.sleep(0.6)
             continue
 
-        # CONSOMMABLES : utiliser / jeter (uc<num>, dc<num>)
+        # CONSOMMABLES : utiliser tout / utiliser 1 / jeter 1 (ucm<num>, uc<num>, dc<num>)
+        if (cmd.startswith('ucm') and cmd[3:].isdigit()) or (cmd.startswith('ucmax') and cmd[5:].isdigit()):
+            idx = int(cmd[3:]) - 1 if cmd.startswith('ucm') else int(cmd[5:]) - 1
+            cons = _consumable_stacks(player)
+            if 0 <= idx < len(cons):
+                cns = cons[idx]['item']
+                qty = int(cons[idx].get('qty', 1))
+                used = 0
+                last_msg = ""
+                for _ in range(max(0, qty)):
+                    status, msg = _apply_consumable_effect(player, cns, in_combat=False)
+                    last_msg = msg
+                    if status == 'blocked':
+                        break
+                    _consume_consumable_at(player, idx)
+                    used += 1
+                if used <= 0:
+                    print(last_msg or "Impossible d'utiliser ce consommable.")
+                    time.sleep(0.8)
+                else:
+                    print(f"{cns.name}: {used} utilisation(s) appliquée(s).")
+                    if last_msg:
+                        print(last_msg)
+                    time.sleep(0.7)
+            else:
+                print("Index de consommable invalide."); time.sleep(0.6)
+            continue
+
         if (cmd.startswith('uc') or cmd.startswith('dc')) and cmd[2:].isdigit():
             idx = int(cmd[2:]) - 1
             cons = _consumable_stacks(player)
@@ -2495,9 +2935,9 @@ def open_inventory(player):
 def _spell_damage_roll(player, spell_power, rand_min, rand_max, coeff=1.0):
     pouv = _spell_pouv(player)
     lvl = max(0, player.level - 1)
-    # Faible scaling niveau, fort scaling POUV.
-    base = spell_power + (lvl * 0.4) + (pouv * 2.0)
-    scaled = int(base * coeff * _spell_power_mult(player))
+    # Scaling dégâts ralenti pour éviter l'explosion de puissance à POUV moyen/haut.
+    base = spell_power + (lvl * 0.35) + (pouv * 1.2)
+    scaled = int(base * coeff * _spell_damage_mult(player))
     return max(1, scaled + random.randint(rand_min, rand_max))
 
 def _spell_heal_amount(player, spell_power, ratio=1.0):
@@ -2510,25 +2950,25 @@ def _spell_effect_details(sp, player):
     pouv = _spell_pouv(player)
     lvl = max(0, player.level - 1)
     if sp.sid == 'pulse':
-        lo = max(1, int((sp.power + lvl * 0.4 + pouv * 2.0) * 0.82 * _spell_power_mult(player)))
+        lo = max(1, int((sp.power + lvl * 0.35 + pouv * 1.2) * 0.82 * _spell_damage_mult(player)))
         hi = lo + 2
         return f"Combat • dégâts: {lo}-{hi} (cantrip)"
     if sp.sid == 'spark':
-        lo = max(1, int((sp.power + lvl * 0.4 + pouv * 2.0) * 0.92 * _spell_power_mult(player)))
+        lo = max(1, int((sp.power + lvl * 0.35 + pouv * 1.2) * 0.92 * _spell_damage_mult(player)))
         hi = lo + 3
         return f"Combat • dégâts: {lo}-{hi} (scale: Niv léger + POUV fort)"
     if sp.sid == 'frostbind':
-        lo = max(1, int((sp.power + lvl * 0.4 + pouv * 2.0) * 0.80 * _spell_power_mult(player)))
+        lo = max(1, int((sp.power + lvl * 0.35 + pouv * 1.2) * 0.80 * _spell_damage_mult(player)))
         hi = lo + 3
         weaken = max(1, int(1 + (pouv * 0.16)))
         return f"Combat • dégâts: {lo}-{hi} • -{weaken} ATK ennemi (2 tours)"
     if sp.sid == 'withering_hex':
-        lo = max(1, int((sp.power + lvl * 0.4 + pouv * 2.0) * 0.72 * _spell_power_mult(player)))
+        lo = max(1, int((sp.power + lvl * 0.35 + pouv * 1.2) * 0.72 * _spell_damage_mult(player)))
         hi = lo + 2
         weaken = max(1, int(2 + (pouv * 0.22)))
         return f"Combat • dégâts: {lo}-{hi} • -{weaken} ATK ennemi (3 tours)"
     if sp.sid == 'sunder_ward':
-        lo = max(1, int((sp.power + lvl * 0.4 + pouv * 2.0) * 0.72 * _spell_power_mult(player)))
+        lo = max(1, int((sp.power + lvl * 0.35 + pouv * 1.2) * 0.72 * _spell_damage_mult(player)))
         hi = lo + 2
         shred = max(1, int(1 + (pouv * 0.20)))
         return f"Combat • dégâts: {lo}-{hi} • -{shred} DEF ennemi (3 tours)"
@@ -2538,11 +2978,11 @@ def _spell_effect_details(sp, player):
         chance = int(round(_horde_conversion_chance(player, hcount + 1) * 100))
         return f"Combat • vs Squelette uniquement • conversion en Horde: {chance}% (diminue avec la taille)"
     if sp.sid == 'arcbolt':
-        lo = max(1, int((sp.power + lvl * 0.4 + pouv * 2.0) * 1.05 * _spell_power_mult(player)))
+        lo = max(1, int((sp.power + lvl * 0.35 + pouv * 1.2) * 1.05 * _spell_damage_mult(player)))
         hi = lo + 6
         return f"Combat • dégâts: {lo}-{hi} (variance élevée)"
     if sp.sid == 'siphon':
-        lo = max(1, int((sp.power + lvl * 0.4 + pouv * 2.0) * 0.90 * _spell_power_mult(player)))
+        lo = max(1, int((sp.power + lvl * 0.35 + pouv * 1.2) * 0.90 * _spell_damage_mult(player)))
         hi = lo + 4
         return f"Combat • dégâts: {lo}-{hi} • soin: 25% des dégâts"
     if sp.sid == 'mending':
@@ -2552,15 +2992,15 @@ def _spell_effect_details(sp, player):
         heal = _spell_heal_amount(player, sp.power, ratio=1.15)
         return f"Combat/Exploration • soin: {heal} PV • sans cooldown"
     if sp.sid == 'rift':
-        lo = max(1, int((sp.power + lvl * 0.4 + pouv * 2.0) * 1.18 * _spell_power_mult(player))) + 1
+        lo = max(1, int((sp.power + lvl * 0.35 + pouv * 1.2) * 1.18 * _spell_damage_mult(player))) + 1
         hi = lo + 5
         return f"Combat • dégâts: {lo}-{hi} (impact)"
     if sp.sid == 'nova':
-        lo = max(1, int((sp.power + lvl * 0.4 + pouv * 2.0) * 1.32 * _spell_power_mult(player))) + 1
+        lo = max(1, int((sp.power + lvl * 0.35 + pouv * 1.2) * 1.32 * _spell_damage_mult(player))) + 1
         hi = lo + 5
         return f"Combat • dégâts: {lo}-{hi} (burst)"
     if sp.sid == 'comet':
-        lo = max(1, int((sp.power + lvl * 0.4 + pouv * 2.0) * 1.40 * _spell_power_mult(player))) + 1
+        lo = max(1, int((sp.power + lvl * 0.35 + pouv * 1.2) * 1.40 * _spell_damage_mult(player))) + 1
         hi = lo + 7
         return f"Combat • dégâts: {lo}-{hi} (burst volatil)"
     if sp.sid in ('summon_slime', 'summon_skeleton', 'summon_dragon', 'summon_afterimage'):
@@ -2586,7 +3026,7 @@ def _spell_effect_details(sp, player):
         bonus = int(round(sp.power * _spell_power_mult(player)))
         return f"Exploration • vision +{bonus} ({_explore_spell_duration(player)} étage(s))"
     if sp.sid == 'warding_mist':
-        bonus = max(1, int(round(sp.power * _spell_power_mult(player))))
+        bonus = int(_explore_stat_spell_values(player, sp.sid).get('spell_defense', 1))
         return f"Exploration • DEF magique +{bonus} ({_explore_spell_duration(player)} étage(s))"
     if sp.sid == 'prospection':
         gain = int(sp.power * _spell_power_mult(player))
@@ -2595,10 +3035,13 @@ def _spell_effect_details(sp, player):
         gain = int(sp.power * _spell_power_mult(player))
         return f"Exploration • +{gain} or"
     if sp.sid == 'arcane_skin':
-        bonus = max(1, int(round(sp.power * _spell_power_mult(player))))
+        bonus = int(_explore_stat_spell_values(player, sp.sid).get('spell_defense', 1))
         return f"Exploration • DEF magique +{bonus} ({_explore_spell_duration(player)} étage(s))"
     if sp.sid == 'focus_sigil':
-        return f"Exploration • CRIT +0.01 • puissance +10% ({_explore_spell_duration(player)} étage(s))"
+        vals = _explore_stat_spell_values(player, sp.sid)
+        crit_gain = float(vals.get('spell_crit', 0.01))
+        power_gain = float(vals.get('spell_power', 0.10))
+        return f"Exploration • CRIT +{crit_gain:.2f} • puissance +{int(round(power_gain*100))}% ({_explore_spell_duration(player)} étage(s))"
     if sp.sid == 'teleport':
         cd_total = _teleport_cooldown_duration(player)
         cd_left = int(player.teleport_spell_cd)
@@ -2687,8 +3130,11 @@ def _cast_explore_spell(player, sid, floor=None, player_pos=None):
         duration = _explore_spell_duration(player)
         player.active_explore_spells[sid] = duration
         _rebuild_floor_magic_from_active_spells(player)
+        vals = _explore_stat_spell_values(player, sid)
+        crit_gain = float(vals.get('spell_crit', 0.01))
+        power_gain = float(vals.get('spell_power', 0.10))
         player.spells_cast_this_floor += 1
-        draw_box("Magie", [f"{sp.name}: CRIT magique +0.01 et puissance +10% pendant {duration} étage(s)."], width=112)
+        draw_box("Magie", [f"{sp.name}: CRIT magique +{crit_gain:.2f} et puissance +{int(round(power_gain*100))}% pendant {duration} étage(s)."], width=112)
         time.sleep(0.8)
         return player_pos, True
     if sid == 'teleport':
@@ -3124,10 +3570,14 @@ def fight(player, depth, boss=False):
     summon = _active_summon(player)
     frag = _active_next_combat_buffs(player)
     frag_active = frag.get('fights_left', 0) > 0
-    frag_atk_mult = 1.0 + frag.get('atk_pct', 0.0)
-    frag_spell_mult = 1.0 + frag.get('spell_pct', 0.0)
-    frag_def_reduct = min(0.55, frag.get('def_pct', 0.0))
-    frag_crit_bonus = frag.get('crit_flat', 0.0)
+    perm_atk_pct = max(0.0, float(p_specs.get('perm_frag_atk_pct', 0.0)))
+    perm_spell_pct = max(0.0, float(p_specs.get('perm_frag_spell_pct', 0.0)))
+    perm_def_pct = max(0.0, float(p_specs.get('perm_frag_def_pct', 0.0)))
+    perm_crit_flat = max(0.0, float(p_specs.get('perm_frag_crit_flat', 0.0)))
+    frag_atk_mult = 1.0 + frag.get('atk_pct', 0.0) + perm_atk_pct
+    frag_spell_mult = 1.0 + frag.get('spell_pct', 0.0) + perm_spell_pct
+    frag_def_reduct = min(0.55, frag.get('def_pct', 0.0) + perm_def_pct)
+    frag_crit_bonus = frag.get('crit_flat', 0.0) + perm_crit_flat
 
     def _finalize_fight():
         if frag_active:
@@ -3190,7 +3640,13 @@ def fight(player, depth, boss=False):
         elif cmd=='2':
             base_cost = max(1, player.max_hp//8 + 2)  # ou ton coût actuel/plus punitif
             cost_mult = p_specs.get("special_cost_mult", 1.0)
-            dmg_mult  = p_specs.get("special_dmg_mult", 1.0) * (1.0 + _spell_pouv(player) * 0.03)
+            if getattr(player, 'klass', '') == 'Mage':
+                pouv_coeff = float(BALANCE.get('mage_special_pouv_coeff', 0.015))
+                class_mult = float(BALANCE.get('mage_special_damage_mult', 0.78))
+            else:
+                pouv_coeff = 0.03
+                class_mult = 1.0
+            dmg_mult  = p_specs.get("special_dmg_mult", 1.0) * (1.0 + _spell_pouv(player) * pouv_coeff) * class_mult
 
             cost = int(base_cost * cost_mult)
             if player.hp > cost:
@@ -3202,6 +3658,8 @@ def fight(player, depth, boss=False):
                 _summon_strike()
             else:
                 print("Pas assez de PV pour la spéciale.")
+                time.sleep(0.6)
+                continue
         elif cmd=='3':
             casted, _spell_flash, spell_action = _cast_combat_spell(player, monster, depth, p_specs, combat_state)
             if not casted:
@@ -3226,7 +3684,10 @@ def fight(player, depth, boss=False):
                 _finalize_fight()
                 return 'fled'
             else: print('Fuite ratée !')
-        else: print('Choix invalide.')
+        else:
+            print('Choix invalide.')
+            time.sleep(0.6)
+            continue
         # DOT poison
         if poison_turns>0 and monster.is_alive():
             dot = max(1, 1 + depth//2)
@@ -3321,7 +3782,11 @@ def fight(player, depth, boss=False):
                 _add_consumable(player, cons, qty=1)
 
             spell_drop_chance = BALANCE.get('spell_drop_base_chance', 0.01) + depth * BALANCE.get('spell_drop_depth_bonus', 0.001)
-            if random.random() < min(0.08, spell_drop_chance):
+            spell_drop_cap = 0.08
+            if getattr(player, 'klass', '') == 'Mage':
+                spell_drop_chance *= float(BALANCE.get('mage_spell_drop_mult', 1.55))
+                spell_drop_cap = float(BALANCE.get('mage_spell_drop_cap', 0.12))
+            if random.random() < min(spell_drop_cap, spell_drop_chance):
                 sid_list = _pick_spell_ids(depth, set(player.spell_scrolls), count=1, source='loot')
                 if sid_list:
                     sid = sid_list[0]
@@ -3760,7 +4225,8 @@ def render_map(floor, player_pos, player):
                 row_parts.append(' ')
                 continue
             if x == px and y == py and is_vis:
-                row_parts.append(c(PLAYER_ICON, T['player']))
+                p_icon = getattr(player, 'map_icon', PLAYER_ICON) or PLAYER_ICON
+                row_parts.append(c(p_icon, T['player']))
             elif up and pos == up and (is_vis or pos in seen_stairs):
                 row_parts.append(c(STAIR_UP, T['up']))
             elif pos == down and (is_vis or pos in seen_stairs):
@@ -3810,10 +4276,7 @@ def open_treasure_choice(player, depth, chest_type='normal'):
     """
     try:
         def chest_item_label(it):
-            if isinstance(it, Consumable):
-                return item_summary(it)
-            slot_label = {'weapon': 'Arme', 'armor': 'Armure', 'accessory': 'Accessoire'}.get(it.slot, it.slot)
-            return f"{it.name} [{slot_label}] [{it.rarity}] — {it.description}"
+            return item_brief_stats(it)
 
         # Les coffres de boss proposent plus d'options et un niveau de loot plus élevé.
         pick_count = 4 if chest_type == 'boss' else 3
@@ -3848,7 +4311,13 @@ def open_treasure_choice(player, depth, chest_type='normal'):
         rarity_score = sum(rarity_xp.get(getattr(it, 'rarity', 'Commun'), 0) for it in choices)
 
         while True:
-            rows = [f"{i+1}) {c(chest_item_label(it), item_display_color(it))}  {preview_delta(player,it)}" for i,it in enumerate(choices)]
+            rows = []
+            for i, it in enumerate(choices):
+                if isinstance(it, Item):
+                    line = f"{i+1}) {item_compact_header(it)} | {preview_delta(player,it)}"
+                    rows.append(c(line, item_display_color(it)))
+                else:
+                    rows.append(f"{i+1}) {chest_item_label(it)}")
             rows += ["", f"Choisissez 1-{pick_count}, ou 'q' pour ignorer"]
             clear_screen()
             # Si tu as des thèmes d'étage, passe theme=floor.theme ici via l'appelant
@@ -3941,10 +4410,13 @@ def open_shop(player, depth):
         else:
             for i, it in enumerate(stock, 1):
                 price = price_of(it)
-                label = item_summary(it)
                 if not isinstance(it, Consumable):
+                    label = f"{item_compact_header(it)} | {preview_delta(player, it)}"
                     label = c(label, item_display_color(it))
-                seller_rows.append(f"{i:>2}) {label}  — {price} or")
+                    seller_rows.append(f"{i:>2}) {label}  — {price} or")
+                else:
+                    label = item_brief_stats(it)
+                    seller_rows.append(f"{i:>2}) {label}  — {price} or")
         seller_rows.append('')
         seller_rows.append(c("Commandes :", Ansi.BRIGHT_WHITE))
         seller_rows.append(" - <num> : acheter l’item du vendeur")
@@ -4148,13 +4620,31 @@ def ask_restart_after_death():
             return False
         print("Réponse invalide (o/n).")
 
+def choose_player_class():
+    rows = [
+        "Choisissez votre classe de départ :",
+        "1) Chevalier — robuste, équilibré, progression martiale.",
+        "2) Mage — grimoire + 1 sort aléatoire dès le début, POUV élevé, ATK/DEF plus faibles.",
+        "",
+        "Entrée vide = Chevalier.",
+    ]
+    draw_box("Classe", rows, width=96)
+    while True:
+        cmd = input("> ").strip().lower()
+        if cmd in ("", "1", "c", "chevalier"):
+            return "Chevalier"
+        if cmd in ("2", "m", "mage"):
+            return "Mage"
+        print("Choix invalide (1/2).")
+
 # ========================== BOUCLE PRINCIPALE ==========================
 def game_loop():
     enable_windows_ansi()
     if '--test' in sys.argv:
         run_tests(); return 'tests_ok'
     title_menu()
-    player=Player('Héros')
+    chosen_class = choose_player_class()
+    player=Player('Héros', klass=chosen_class)
     if '--debug-all-spells' in sys.argv or '--all-spells' in sys.argv:
         player.spellbook_unlocked = True
         player.spell_scrolls = [sp.sid for sp in SPELLS]
@@ -4407,6 +4897,14 @@ def run_tests():
     assert _can_upgrade_item(it_epi1) is True, 'Épique +1 doit encore être améliorable'
     assert _item_upgrade_limit(it_cursed) is None, 'Cursed doit être illimité'
     assert _upgrade_break_chance_for_item(it_cursed, 0.10) > 0.10, 'Cursed doit avoir plus de risque de casse'
+    # Régression casino: cap bloqué ne doit pas consommer d'or
+    pcap = Player('CapTest')
+    pcap.gold = 123
+    pcap.equip(it_rare1)
+    before_gold = pcap.gold
+    res_cap = _casino_upgrade_equipped_item(pcap, 'weapon', upgrade_cost=40, upgrade_break_chance=0.10, use_fragment_guard=False)
+    assert res_cap.get('status') == 'blocked_cap', 'Upgrade capé doit être bloqué'
+    assert pcap.gold == before_gold, 'Upgrade capé ne doit pas consommer d or'
     # Structures étage étendues
     assert hasattr(f, 'locked_doors') and hasattr(f, 'altars') and hasattr(f, 'casinos'), 'Attributs d étage manquants'
     # Magie: génération sage + sélection de parchemin
@@ -4418,7 +4916,7 @@ def run_tests():
     assert _spell_by_id('withering_hex') is not None and _spell_by_id('sunder_ward') is not None, 'Sorts de debuff manquants'
     assert _summon_spell_cooldown_for_sid('summon_afterimage') == 2, 'Cooldown image rémanante invalide'
     sm_after = _summon_from_spell(p, 'summon_afterimage')
-    assert sm_after and sm_after.get('can_attack') is False and abs(float(sm_after.get('guard_ratio', 0.0)) - 0.90) < 1e-9, 'Invocation image rémanante invalide'
+    assert sm_after and sm_after.get('can_attack') is False and abs(float(sm_after.get('guard_ratio', 0.0)) - 0.80) < 1e-9, 'Invocation image rémanante invalide'
     # Horde de squelettes (Appel des morts)
     assert _spell_by_id('call_of_dead') is not None, 'Sort Appel des morts manquant'
     h = _create_horde(p, count=2)
@@ -4440,6 +4938,42 @@ def run_tests():
     assert _consumable_slots_used(p2) == 2 and _consumable_total_count(p2) == 4, 'Nouveau slot attendu au 4e exemplaire'
     _consume_consumable_at(p2, 0)
     assert _consumable_total_count(p2) == 3, 'Consommation d unité invalide'
+    # Fragments: stack max 5 + conversion en permanent (valeur d'un fragment, pas x5)
+    p3 = Player('FragTest')
+    frag = GEM_FRAGMENT_POOL[0]  # frag_atk_pct (0.06, 2)
+    for _ in range(5):
+        assert _add_consumable(p3, frag, qty=1) == 1
+    stacks3 = _consumable_stacks(p3)
+    assert all(not (st['item'] == frag and st['qty'] >= 5) for st in stacks3), 'Stack fragment 5 doit se convertir'
+    assert abs(float(p3.passive_specials.get('perm_frag_atk_pct', 0.0)) - 0.06) < 1e-9, 'Permanent fragment invalide'
+    # Deux types différents ne doivent pas se sommer en "un même fragment"
+    frag2 = GEM_FRAGMENT_POOL[1]  # frag_def_pct
+    for _ in range(3):
+        assert _add_consumable(p3, frag2, qty=1) == 1
+    assert abs(float(p3.passive_specials.get('perm_frag_def_pct', 0.0))) < 1e-9, 'Conversion ne doit pas dépendre de la somme inter-types'
+    # Classe mage: grimoire de départ + scaling POUV
+    pm = Player('MageTest', klass='Mage')
+    assert pm.klass == 'Mage' and pm.spellbook_unlocked and len(pm.spell_scrolls) >= 1, 'Mage: démarrage grimoire/sort invalide'
+    assert pm.max_hp == 24 and pm.atk == 6 and int(pm.defense) == 2, 'Mage: stats de départ invalides (24/6/2 attendu)'
+    assert _spell_cast_limit(pm) >= 3, 'Mage: 3 emplacements de sort attendus dès le départ'
+    assert pm.sprite == SPRITES.get('mage', []), 'Mage: sprite invalide'
+    assert _spell_pouv(pm) >= 3, 'Mage: POUV de base invalide (>=3 attendu)'
+    pm_pouv_before = _spell_pouv(pm)
+    pm.gain_xp(BALANCE['level_xp_threshold'])
+    assert _spell_pouv(pm) >= pm_pouv_before, 'Mage: POUV doit progresser avec le niveau'
+    pm.level = 6
+    assert _spell_cast_limit(pm) >= 5, 'Mage: +1 emplacement tous les 2 niveaux attendu au niveau 6'
+    # Sorts de buff: doivent scaler avec la POUV
+    p_low = Player('BuffLow', klass='Chevalier')
+    p_hi = Player('BuffHi', klass='Chevalier')
+    p_hi.passive_specials['pouv'] = 30
+    low_def = int(_explore_stat_spell_values(p_low, 'warding_mist').get('spell_defense', 0))
+    hi_def = int(_explore_stat_spell_values(p_hi, 'warding_mist').get('spell_defense', 0))
+    low_focus = _explore_stat_spell_values(p_low, 'focus_sigil')
+    hi_focus = _explore_stat_spell_values(p_hi, 'focus_sigil')
+    assert hi_def >= low_def, 'Buff DEF magique doit augmenter avec la POUV'
+    assert float(hi_focus.get('spell_crit', 0.0)) >= float(low_focus.get('spell_crit', 0.0)), 'Buff CRIT magique doit augmenter avec la POUV'
+    assert float(hi_focus.get('spell_power', 0.0)) >= float(low_focus.get('spell_power', 0.0)), 'Buff puissance magique doit augmenter avec la POUV'
     print('OK')
 
 if __name__=='__main__':
