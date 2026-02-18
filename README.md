@@ -49,6 +49,7 @@ ROGMINAL est un dungeon crawler ASCII orienté progression:
 - utiliser un fragment de pierre peut empêcher la destruction d'un item magique lors de son amélioration
 - le marchand a plus tendance à vendre des parchemins au mage !
 - avoir un stack de 5 fragments vous donne un effet permanant
+- avoir une horde de mort est très efficace, il est toutefois compliqué de l'agrandir
 
 ## Roadmap (idées)
 - équilibrage fin des classes et du scaling
