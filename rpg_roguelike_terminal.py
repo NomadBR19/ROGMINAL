@@ -446,6 +446,8 @@ BALANCE = {
     'spell_drop_depth_bonus': 0.0012,
     'spell_shop_min_depth': 8,
     'spell_shop_offer_chance': 0.65,
+    'mage_spell_shop_offer_bonus': 0.22,
+    'mage_spell_shop_offer_cap': 0.92,
     'spell_shop_price_mult': 1.0,
     'summon_spell_cooldown_floors': 5,
     'sage_reroll_cost_base': 240,
@@ -469,6 +471,26 @@ BALANCE = {
     'mage_spell_drop_cap': 0.12,
     'mage_special_pouv_coeff': 0.015,
     'mage_special_damage_mult': 0.78,
+
+    # Nerfs magie / invocation (scaling POUV)
+    'spell_damage_base_lvl_coeff': 0.30,
+    'spell_damage_base_pouv_coeff': 0.90,
+    'spell_damage_mult_pouv_coeff': 0.03,
+    'spell_heal_base_lvl_coeff': 0.55,
+    'spell_heal_base_pouv_coeff': 1.40,
+    'spell_heal_mult_pouv_coeff': 0.04,
+    'horde_member_pouv_hp': 1.80,
+    'horde_member_pouv_atk': 0.45,
+    'horde_member_pouv_def': 0.22,
+    'summon_afterimage_pouv_hp': 2.00,
+    'summon_afterimage_pouv_def': 0.20,
+    'summon_pouv_hp': 2.40,
+    'summon_pouv_atk': 0.45,
+    'summon_pouv_def': 0.28,
+    'horde_conversion_base': 0.42,
+    'horde_conversion_pouv_coeff': 0.007,
+    'horde_conversion_size_penalty': 0.03,
+    'horde_conversion_cap': 0.60,
 }
 
 # Déplacements: ZQSD/WASD seulement
@@ -512,7 +534,7 @@ SPRITES = {
     'mage': [
         "       /)   <(o)>",
         "      /~\     I",
-        "     /o_o\    I",
+        "     /._.\    I",
         "   ~_\   /_~  I",
         "   (_/`-`\_) (]",
         "   //\___/j\/ |",
@@ -520,7 +542,7 @@ SPRITES = {
         "    \|_._||   |",
         "    |<_I_>|   |",
         "    | ||| |   |",
-        "  _/|/_|_\ \_ !",
+        "  _/ /_|_\ \_ !",
     ],
     'slime': [
     "       __",
@@ -1145,7 +1167,7 @@ class Player(Character):
             f"Niv:{self.level}",
             f"{color_label('HP')}:{hp_gauge_text(self.hp, self.max_hp)}",
             f"{color_label('ATK')}:{color_val('ATK', self.atk + self.temp_buffs['atk'])}",
-            f"{color_label('DEF')}:{color_val('DEF', self.defense)}",
+            f"{color_label('DEF')}:{color_val('DEF', _fmt_num(self.defense))}",
             f"{color_label('CRIT')}:{color_val('CRIT', f'{self.crit:.2f}')}",
             f"{color_label('POUV')}:{color_val('POUV', _spell_pouv(self))}",
             f"{color_label('OR')}:{color_val('OR', self.gold)}",
@@ -1609,7 +1631,29 @@ def _spell_damage_mult(player):
     pouv = _spell_pouv(player)
     lvl = max(0, player.level - 1)
     # Scaling dégâts volontairement plus doux que le scaling utilitaire.
-    return 1.0 + (pouv * 0.045) + (lvl * 0.005) + max(0.0, float(specs.get('spell_power', 0.0)))
+    pouv_coeff = float(BALANCE.get('spell_damage_mult_pouv_coeff', 0.045))
+    return 1.0 + (pouv * pouv_coeff) + (lvl * 0.005) + max(0.0, float(specs.get('spell_power', 0.0)))
+
+def _spell_heal_mult(player):
+    specs = player.all_specials()
+    pouv = _spell_pouv(player)
+    lvl = max(0, player.level - 1)
+    pouv_coeff = float(BALANCE.get('spell_heal_mult_pouv_coeff', 0.04))
+    return 1.0 + (pouv * pouv_coeff) + (lvl * 0.004) + max(0.0, float(specs.get('spell_power', 0.0)))
+
+def _spell_damage_base(player, spell_power):
+    pouv = _spell_pouv(player)
+    lvl = max(0, player.level - 1)
+    lvl_coeff = float(BALANCE.get('spell_damage_base_lvl_coeff', 0.35))
+    pouv_coeff = float(BALANCE.get('spell_damage_base_pouv_coeff', 1.2))
+    return spell_power + (lvl * lvl_coeff) + (pouv * pouv_coeff)
+
+def _spell_heal_base(player, spell_power):
+    pouv = _spell_pouv(player)
+    lvl = max(0, player.level - 1)
+    lvl_coeff = float(BALANCE.get('spell_heal_base_lvl_coeff', 0.7))
+    pouv_coeff = float(BALANCE.get('spell_heal_base_pouv_coeff', 2.2))
+    return spell_power + (lvl * lvl_coeff) + (pouv * pouv_coeff)
 
 def _spell_scroll_price(spell, depth):
     base = {'Commun': 95, 'Rare': 180, 'Épique': 320, 'Légendaire': 560}.get(spell.rarity, 220)
@@ -1781,10 +1825,13 @@ def _afterimage_sprite(player):
 
 def _horde_member_stats(player):
     pouv = max(0, _spell_pouv(player))
+    hp_coeff = float(BALANCE.get('horde_member_pouv_hp', 2.6))
+    atk_coeff = float(BALANCE.get('horde_member_pouv_atk', 0.75))
+    def_coeff = float(BALANCE.get('horde_member_pouv_def', 0.35))
     return {
-        'hp': max(8, 12 + int(pouv * 2.6)),
-        'atk': max(1, 3 + int(pouv * 0.75)),
-        'defense': max(0, 1 + int(pouv * 0.35)),
+        'hp': max(8, 12 + int(pouv * hp_coeff)),
+        'atk': max(1, 3 + int(pouv * atk_coeff)),
+        'defense': max(0, 1 + int(pouv * def_coeff)),
         'crit': max(0.0, min(0.35, 0.02 + pouv * 0.003)),
     }
 
@@ -1806,11 +1853,15 @@ def _horde_map_sprite(count):
     return rows
 
 def _horde_conversion_chance(player, horde_count):
-    # Base 50%, bonus POUV, puis pénalité par taille de horde.
+    # Base + bonus POUV, puis pénalité par taille de horde.
+    # Le premier squelette est volontairement capé (jamais > cap).
     pouv = max(0, _spell_pouv(player))
-    base = 0.50 + (pouv * 0.010)
-    penalty = max(0, int(horde_count) - 1) * 0.03
-    return max(0.05, min(0.70, base - penalty))
+    base = float(BALANCE.get('horde_conversion_base', 0.50))
+    pouv_coeff = float(BALANCE.get('horde_conversion_pouv_coeff', 0.010))
+    size_penalty = float(BALANCE.get('horde_conversion_size_penalty', 0.03))
+    cap = float(BALANCE.get('horde_conversion_cap', 0.60))
+    chance = base + (pouv * pouv_coeff) - (max(0, int(horde_count) - 1) * size_penalty)
+    return max(0.05, min(cap, chance))
 
 def _refresh_horde_stats(player, horde):
     if not isinstance(horde, dict) or horde.get('id') != 'horde':
@@ -1873,7 +1924,9 @@ def _horde_add_member(player, horde, add=1):
 def _summon_from_spell(player, sid):
     if sid == 'summon_afterimage':
         pouv = max(0, _spell_pouv(player))
-        max_hp = max(18, int(player.max_hp * 0.45) + 8 + int(pouv * 3.0))
+        hp_coeff = float(BALANCE.get('summon_afterimage_pouv_hp', 3.0))
+        def_coeff = float(BALANCE.get('summon_afterimage_pouv_def', 0.3))
+        max_hp = max(18, int(player.max_hp * 0.45) + 8 + int(pouv * hp_coeff))
         return {
             'id': 'afterimage',
             'name': 'Image rémanante',
@@ -1883,7 +1936,7 @@ def _summon_from_spell(player, sid):
             'hp': max_hp,
             'max_hp': max_hp,
             'atk': 0,
-            'defense': max(0, int(player.defense * 0.25) + int(pouv * 0.3)),
+            'defense': max(0, int(player.defense * 0.25) + int(pouv * def_coeff)),
             'crit': 0.0,
             'can_attack': False,
             'guard_ratio': 0.80,
@@ -1897,12 +1950,15 @@ def _summon_from_spell(player, sid):
     if not mdef:
         return None
     pouv = max(0, _spell_pouv(player))
+    hp_coeff = float(BALANCE.get('summon_pouv_hp', 4.0))
+    atk_coeff = float(BALANCE.get('summon_pouv_atk', 0.8))
+    def_coeff = float(BALANCE.get('summon_pouv_def', 0.45))
     base_hp = int(mdef['hp'] * 0.55)
     base_atk = int(mdef['atk'] * 0.55)
     base_def = int(mdef['def'] * 0.55)
-    max_hp = max(8, base_hp + 6 + int(pouv * 4.0))
-    atk = max(1, base_atk + 1 + int(pouv * 0.8))
-    defense = max(0, base_def + int(pouv * 0.45))
+    max_hp = max(8, base_hp + 6 + int(pouv * hp_coeff))
+    atk = max(1, base_atk + 1 + int(pouv * atk_coeff))
+    defense = max(0, base_def + int(pouv * def_coeff))
     return {
         'id': summon_id,
         'name': mdef['name'],
@@ -2948,42 +3004,38 @@ def open_inventory(player):
 
 # ========================== GRIMOIRE ==========================
 def _spell_damage_roll(player, spell_power, rand_min, rand_max, coeff=1.0):
-    pouv = _spell_pouv(player)
-    lvl = max(0, player.level - 1)
     # Scaling dégâts ralenti pour éviter l'explosion de puissance à POUV moyen/haut.
-    base = spell_power + (lvl * 0.35) + (pouv * 1.2)
+    base = _spell_damage_base(player, spell_power)
     scaled = int(base * coeff * _spell_damage_mult(player))
     return max(1, scaled + random.randint(rand_min, rand_max))
 
 def _spell_heal_amount(player, spell_power, ratio=1.0):
-    pouv = _spell_pouv(player)
-    lvl = max(0, player.level - 1)
-    base = spell_power + (lvl * 0.7) + (pouv * 2.2)
-    return max(1, int(round(base * ratio * _spell_power_mult(player))))
+    base = _spell_heal_base(player, spell_power)
+    return max(1, int(round(base * ratio * _spell_heal_mult(player))))
 
 def _spell_effect_details(sp, player):
     pouv = _spell_pouv(player)
     lvl = max(0, player.level - 1)
     if sp.sid == 'pulse':
-        lo = max(1, int((sp.power + lvl * 0.35 + pouv * 1.2) * 0.82 * _spell_damage_mult(player)))
+        lo = max(1, int(_spell_damage_base(player, sp.power) * 0.82 * _spell_damage_mult(player)))
         hi = lo + 2
         return f"Combat • dégâts: {lo}-{hi} (cantrip)"
     if sp.sid == 'spark':
-        lo = max(1, int((sp.power + lvl * 0.35 + pouv * 1.2) * 0.92 * _spell_damage_mult(player)))
+        lo = max(1, int(_spell_damage_base(player, sp.power) * 0.92 * _spell_damage_mult(player)))
         hi = lo + 3
         return f"Combat • dégâts: {lo}-{hi} (scale: Niv léger + POUV fort)"
     if sp.sid == 'frostbind':
-        lo = max(1, int((sp.power + lvl * 0.35 + pouv * 1.2) * 0.80 * _spell_damage_mult(player)))
+        lo = max(1, int(_spell_damage_base(player, sp.power) * 0.80 * _spell_damage_mult(player)))
         hi = lo + 3
         weaken = max(1, int(1 + (pouv * 0.16)))
         return f"Combat • dégâts: {lo}-{hi} • -{weaken} ATK ennemi (2 tours)"
     if sp.sid == 'withering_hex':
-        lo = max(1, int((sp.power + lvl * 0.35 + pouv * 1.2) * 0.72 * _spell_damage_mult(player)))
+        lo = max(1, int(_spell_damage_base(player, sp.power) * 0.72 * _spell_damage_mult(player)))
         hi = lo + 2
         weaken = max(1, int(2 + (pouv * 0.22)))
         return f"Combat • dégâts: {lo}-{hi} • -{weaken} ATK ennemi (3 tours)"
     if sp.sid == 'sunder_ward':
-        lo = max(1, int((sp.power + lvl * 0.35 + pouv * 1.2) * 0.72 * _spell_damage_mult(player)))
+        lo = max(1, int(_spell_damage_base(player, sp.power) * 0.72 * _spell_damage_mult(player)))
         hi = lo + 2
         shred = max(1, int(1 + (pouv * 0.20)))
         return f"Combat • dégâts: {lo}-{hi} • -{shred} DEF ennemi (3 tours)"
@@ -2993,11 +3045,11 @@ def _spell_effect_details(sp, player):
         chance = int(round(_horde_conversion_chance(player, hcount + 1) * 100))
         return f"Combat • vs Squelette uniquement • conversion en Horde: {chance}% (diminue avec la taille)"
     if sp.sid == 'arcbolt':
-        lo = max(1, int((sp.power + lvl * 0.35 + pouv * 1.2) * 1.05 * _spell_damage_mult(player)))
+        lo = max(1, int(_spell_damage_base(player, sp.power) * 1.05 * _spell_damage_mult(player)))
         hi = lo + 6
         return f"Combat • dégâts: {lo}-{hi} (variance élevée)"
     if sp.sid == 'siphon':
-        lo = max(1, int((sp.power + lvl * 0.35 + pouv * 1.2) * 0.90 * _spell_damage_mult(player)))
+        lo = max(1, int(_spell_damage_base(player, sp.power) * 0.90 * _spell_damage_mult(player)))
         hi = lo + 4
         return f"Combat • dégâts: {lo}-{hi} • soin: 25% des dégâts"
     if sp.sid == 'mending':
@@ -3007,15 +3059,15 @@ def _spell_effect_details(sp, player):
         heal = _spell_heal_amount(player, sp.power, ratio=1.15)
         return f"Combat/Exploration • soin: {heal} PV • sans cooldown"
     if sp.sid == 'rift':
-        lo = max(1, int((sp.power + lvl * 0.35 + pouv * 1.2) * 1.18 * _spell_damage_mult(player))) + 1
+        lo = max(1, int(_spell_damage_base(player, sp.power) * 1.18 * _spell_damage_mult(player))) + 1
         hi = lo + 5
         return f"Combat • dégâts: {lo}-{hi} (impact)"
     if sp.sid == 'nova':
-        lo = max(1, int((sp.power + lvl * 0.35 + pouv * 1.2) * 1.32 * _spell_damage_mult(player))) + 1
+        lo = max(1, int(_spell_damage_base(player, sp.power) * 1.32 * _spell_damage_mult(player))) + 1
         hi = lo + 5
         return f"Combat • dégâts: {lo}-{hi} (burst)"
     if sp.sid == 'comet':
-        lo = max(1, int((sp.power + lvl * 0.35 + pouv * 1.2) * 1.40 * _spell_damage_mult(player))) + 1
+        lo = max(1, int(_spell_damage_base(player, sp.power) * 1.40 * _spell_damage_mult(player))) + 1
         hi = lo + 7
         return f"Combat • dégâts: {lo}-{hi} (burst volatil)"
     if sp.sid in ('summon_slime', 'summon_skeleton', 'summon_dragon', 'summon_afterimage'):
@@ -3032,10 +3084,10 @@ def _spell_effect_details(sp, player):
         if sm:
             return f"Combat/Exploration • invoque {name} (actif: {sm.get('name','?')} {sm.get('hp',0)}/{sm.get('max_hp',0)}){cd_txt}"
         if sp.sid == 'summon_afterimage':
-            pv = max(18, int(player.max_hp * 0.45) + 8 + int(pouv * 3.0))
+            pv = max(18, int(player.max_hp * 0.45) + 8 + int(pouv * float(BALANCE.get('summon_afterimage_pouv_hp', 3.0))))
             return f"Combat/Exploration • invoque {name} • clone non-offensif ({pv} PV) • intercepte 90%{cd_txt}"
-        pv = max(8, int((12 + sp.power * 4) + pouv * 4.0))
-        atk = max(1, int((3 + sp.power) + pouv * 0.8))
+        pv = max(8, int((12 + sp.power * 4) + pouv * float(BALANCE.get('summon_pouv_hp', 4.0))))
+        atk = max(1, int((3 + sp.power) + pouv * float(BALANCE.get('summon_pouv_atk', 0.8))))
         return f"Combat/Exploration • invoque {name} • stats approx: {pv} PV / {atk} ATK{cd_txt}"
     if sp.sid == 'clairvoyance':
         bonus = int(round(sp.power * _spell_power_mult(player)))
@@ -4419,7 +4471,11 @@ def open_shop(player, depth):
     normal_key_price = BALANCE.get('normal_key_shop_price', 70) + depth * 6
     shop_spell_sid = None
     spell_min_depth = BALANCE.get('spell_shop_min_depth', 8)
-    if depth >= spell_min_depth and random.random() < BALANCE.get('spell_shop_offer_chance', 0.6):
+    spell_offer_chance = float(BALANCE.get('spell_shop_offer_chance', 0.6))
+    if getattr(player, 'klass', '') == 'Mage':
+        spell_offer_chance += float(BALANCE.get('mage_spell_shop_offer_bonus', 0.22))
+        spell_offer_chance = min(float(BALANCE.get('mage_spell_shop_offer_cap', 0.92)), spell_offer_chance)
+    if depth >= spell_min_depth and random.random() < spell_offer_chance:
         offer = _pick_spell_ids(depth, set(player.spell_scrolls), count=1, source='shop')
         if offer:
             shop_spell_sid = offer[0]
@@ -4952,6 +5008,9 @@ def run_tests():
     c1 = _horde_conversion_chance(p, 1)
     c6 = _horde_conversion_chance(p, 6)
     assert c1 > c6, 'La conversion doit devenir plus difficile avec une grande horde'
+    p.passive_specials['pouv'] = 999
+    ccap = _horde_conversion_chance(p, 1)
+    assert ccap <= float(BALANCE.get('horde_conversion_cap', 0.60)) + 1e-9, 'Le premier squelette doit respecter le cap de conversion'
     # Consommables stackés
     p2 = Player('StackTest')
     heal = CONSUMABLE_POOL[0]
