@@ -469,8 +469,8 @@ BALANCE = {
     'mage_pouv_gain_every_levels': 2,
     'mage_spell_drop_mult': 1.55,
     'mage_spell_drop_cap': 0.12,
-    'mage_special_pouv_coeff': 0.015,
-    'mage_special_damage_mult': 0.78,
+    'mage_special_pouv_coeff': 0.010,
+    'mage_special_damage_mult': 0.62,
 
     # Nerfs magie / invocation (scaling POUV)
     'spell_damage_base_lvl_coeff': 0.30,
@@ -533,10 +533,10 @@ SPRITES = {
     ],
     'mage': [
         "       /)   <(o)>",
-        "      /~\     I",
+        "      /~\     8",
         "     /._.\    I",
-        "   ~_\   /_~  I",
-        "   (_/`-`\_) (]",
+        "   ~_\ _ /_~  I",
+        "   (_/-V-\_) (]",
         "   //\___/j\/ |",
         "   <>/   \ v  |",
         "    \|_._||   |",
