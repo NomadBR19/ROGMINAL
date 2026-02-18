@@ -11,6 +11,8 @@ ROGMINAL est un dungeon crawler ASCII orienté progression:
 
 <img width="951" height="482" alt="image" src="https://github.com/user-attachments/assets/ab9c42d0-29ea-42c5-a362-8be8bd3b5f0e" />
 
+<img width="758" height="439" alt="image" src="https://github.com/user-attachments/assets/86bc3465-8cce-4355-87ec-c2116037d977" />
+
 ## Fonctionnalités
 - 2 classes jouables: `Chevalier` et `Mage`
 - Système de quêtes PNJ N(chasse / survie)
