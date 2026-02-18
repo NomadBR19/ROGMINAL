@@ -115,6 +115,7 @@ class Ansi:
 
 SUPPORTS_ANSI = True
 SHOW_SIDE_SPRITE = True
+MAP_FRAME_ACTIVE = False
 
 # Truecolor (RGB) — pour de vrais pastels si le terminal le supporte
 USE_TRUECOLOR = True  # passe à False si rendu bizarre
@@ -1364,6 +1365,9 @@ MONSTER_DEFS = [
 # ========================== UTILITAIRES ==========================
 def clear_screen():
     # Évite le clipping/flicker causé par `cls`/`clear` en sous-processus.
+    # Toute vue non-map invalide le mode repaint incrémental de la map.
+    global MAP_FRAME_ACTIVE
+    MAP_FRAME_ACTIVE = False
     # Avec ANSI, on repositionne le curseur puis on efface le buffer écran.
     if SUPPORTS_ANSI:
         sys.stdout.write("\x1b[H\x1b[2J\x1b[3J")
@@ -1372,6 +1376,17 @@ def clear_screen():
     os.system('cls' if os.name=='nt' else 'clear')
 
 def pause(msg='Appuyez sur Entrée pour continuer...'): input(msg)
+
+def begin_frame_redraw():
+    """
+    Redessine une frame en évitant l'effacement total (réduit flicker/clipping).
+    """
+    if SUPPORTS_ANSI:
+        # Repaint map->map: curseur en haut sans full clear (réduit le flicker).
+        sys.stdout.write("\x1b[H")
+        sys.stdout.flush()
+    else:
+        clear_screen()
 
 def rarity_color(r):
     return {
@@ -3568,6 +3583,7 @@ def fight(player, depth, boss=False):
     monster.max_hp = mdef['hp']
     sprite_m = mdef['sprite']
     summon = _active_summon(player)
+    p_specs = player.all_specials()
     frag = _active_next_combat_buffs(player)
     frag_active = frag.get('fights_left', 0) > 0
     perm_atk_pct = max(0.0, float(p_specs.get('perm_frag_atk_pct', 0.0)))
@@ -3583,7 +3599,7 @@ def fight(player, depth, boss=False):
         if frag_active:
             _consume_next_combat_charge(player)
 
-    p_specs = player.all_specials(); poison_turns=0
+    poison_turns=0
     p_specs['bonus_crit'] = float(p_specs.get('spell_crit', 0.0)) + frag_crit_bonus
     p_specs['frag_spell_mult'] = frag_spell_mult
     combat_state = {
@@ -4119,6 +4135,7 @@ def interaction_hint(floor, player_pos):
     return None
 
 def render_map(floor, player_pos, player):
+    global MAP_FRAME_ACTIVE
     # maj visibilité
     base_radius = 8
     bonus = player.all_specials().get('fov_bonus', 0)
@@ -4152,7 +4169,10 @@ def render_map(floor, player_pos, player):
 
     # entête et bordures
     T = floor.theme
-    clear_screen()
+    if MAP_FRAME_ACTIVE:
+        begin_frame_redraw()
+    else:
+        clear_screen()
     border_left = c('│', T['border'])
     border_right = c('│', T['border'])
     print(c('┌' + '─' * MAP_W + '┐', T['border']))
@@ -4266,6 +4286,11 @@ def render_map(floor, player_pos, player):
     hint = interaction_hint(floor, player_pos)
     if hint:
         print(c(hint, Ansi.BRIGHT_YELLOW))
+    if SUPPORTS_ANSI:
+        # Nettoie les éventuels résidus d'une frame précédente plus grande.
+        sys.stdout.write("\x1b[J")
+        sys.stdout.flush()
+    MAP_FRAME_ACTIVE = True
 
 # ========================== COFFRE ==========================
 def open_treasure_choice(player, depth, chest_type='normal'):
