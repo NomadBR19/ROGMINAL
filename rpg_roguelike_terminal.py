@@ -473,20 +473,26 @@ BALANCE = {
     'mage_special_damage_mult': 0.62,
 
     # Nerfs magie / invocation (scaling POUV)
-    'spell_damage_base_lvl_coeff': 0.30,
-    'spell_damage_base_pouv_coeff': 0.90,
-    'spell_damage_mult_pouv_coeff': 0.03,
-    'spell_heal_base_lvl_coeff': 0.55,
-    'spell_heal_base_pouv_coeff': 1.40,
-    'spell_heal_mult_pouv_coeff': 0.04,
-    'horde_member_pouv_hp': 1.80,
-    'horde_member_pouv_atk': 0.45,
-    'horde_member_pouv_def': 0.22,
-    'summon_afterimage_pouv_hp': 2.00,
-    'summon_afterimage_pouv_def': 0.20,
-    'summon_pouv_hp': 2.40,
-    'summon_pouv_atk': 0.45,
-    'summon_pouv_def': 0.28,
+    'spell_damage_base_lvl_coeff': 0.24,
+    'spell_damage_base_pouv_coeff': 0.62,
+    'spell_damage_mult_pouv_coeff': 0.020,
+    'spell_heal_base_lvl_coeff': 0.30,
+    'spell_heal_base_pouv_coeff': 0.55,
+    'spell_heal_mult_pouv_coeff': 0.015,
+    'spell_heal_softcap_start': 8,
+    'spell_heal_softcap_per_pouv': 0.045,
+    'spell_heal_softcap_min': 0.40,
+    'summon_softcap_start': 8,
+    'summon_softcap_per_pouv': 0.035,
+    'summon_softcap_min': 0.45,
+    'horde_member_pouv_hp': 1.10,
+    'horde_member_pouv_atk': 0.26,
+    'horde_member_pouv_def': 0.12,
+    'summon_afterimage_pouv_hp': 1.20,
+    'summon_afterimage_pouv_def': 0.10,
+    'summon_pouv_hp': 1.30,
+    'summon_pouv_atk': 0.24,
+    'summon_pouv_def': 0.14,
     'horde_conversion_base': 0.42,
     'horde_conversion_pouv_coeff': 0.007,
     'horde_conversion_size_penalty': 0.03,
@@ -1155,7 +1161,11 @@ class Player(Character):
         _rebuild_floor_magic_from_active_spells(self)
 
     def can_cast_spell(self):
-        return self.spellbook_unlocked and _spell_casts_left(self) > 0
+        if not self.spellbook_unlocked:
+            return False
+        if _spell_casts_left(self) > 0:
+            return True
+        return any(_spell_slot_cost(_spell_by_id(sid)) == 0 for sid in self.spell_scrolls)
     
     def stats_summary(self):
         sm = _active_summon(self)
@@ -1529,6 +1539,50 @@ def _spell_cast_limit(player):
 def _spell_casts_left(player):
     return max(0, _spell_cast_limit(player) - player.spells_cast_this_floor)
 
+SPELL_CANTRIP_SIDS = {'pulse'}
+
+def _spell_slot_cost(spell_or_sid):
+    if isinstance(spell_or_sid, str):
+        sp = _spell_by_id(spell_or_sid)
+    else:
+        sp = spell_or_sid
+    if not sp:
+        return 1
+    if sp.sid in SPELL_CANTRIP_SIDS:
+        return 0
+    return {'Rare': 1, 'Épique': 2, 'Légendaire': 3}.get(sp.rarity, 1)
+
+def _spell_can_pay(player, spell_or_sid):
+    cost = _spell_slot_cost(spell_or_sid)
+    return cost <= 0 or _spell_casts_left(player) >= cost
+
+def _spend_spell_slots(player, spell_or_sid):
+    cost = max(0, int(_spell_slot_cost(spell_or_sid)))
+    if cost > 0:
+        player.spells_cast_this_floor += cost
+    return cost
+
+def _spell_softcap_mult_from_pouv(pouv, start, per_pouv, floor_mult):
+    excess = max(0.0, float(pouv) - max(0.0, float(start)))
+    mult = 1.0 / (1.0 + excess * max(0.0, float(per_pouv)))
+    return max(float(floor_mult), min(1.0, mult))
+
+def _spell_heal_softcap_mult(player):
+    return _spell_softcap_mult_from_pouv(
+        _spell_pouv(player),
+        BALANCE.get('spell_heal_softcap_start', 8),
+        BALANCE.get('spell_heal_softcap_per_pouv', 0.045),
+        BALANCE.get('spell_heal_softcap_min', 0.40),
+    )
+
+def _summon_softcap_mult(player):
+    return _spell_softcap_mult_from_pouv(
+        _spell_pouv(player),
+        BALANCE.get('summon_softcap_start', 8),
+        BALANCE.get('summon_softcap_per_pouv', 0.035),
+        BALANCE.get('summon_softcap_min', 0.45),
+    )
+
 def _spell_pouv_breakdown(player):
     specs_pouv = max(0.0, float(player.all_specials().get('pouv', 0)))
     passive_floor_pouv = max(0.0, float(getattr(player, 'passive_specials', {}).get('pouv', 0))) + max(0.0, float(getattr(player, 'floor_specials', {}).get('pouv', 0)))
@@ -1825,14 +1879,15 @@ def _afterimage_sprite(player):
 
 def _horde_member_stats(player):
     pouv = max(0, _spell_pouv(player))
+    pouv_eff = max(0.0, pouv * _summon_softcap_mult(player))
     hp_coeff = float(BALANCE.get('horde_member_pouv_hp', 2.6))
     atk_coeff = float(BALANCE.get('horde_member_pouv_atk', 0.75))
     def_coeff = float(BALANCE.get('horde_member_pouv_def', 0.35))
     return {
-        'hp': max(8, 12 + int(pouv * hp_coeff)),
-        'atk': max(1, 3 + int(pouv * atk_coeff)),
-        'defense': max(0, 1 + int(pouv * def_coeff)),
-        'crit': max(0.0, min(0.35, 0.02 + pouv * 0.003)),
+        'hp': max(8, 12 + int(pouv_eff * hp_coeff)),
+        'atk': max(1, 3 + int(pouv_eff * atk_coeff)),
+        'defense': max(0, 1 + int(pouv_eff * def_coeff)),
+        'crit': max(0.0, min(0.30, 0.02 + pouv_eff * 0.002)),
     }
 
 def _horde_map_sprite(count):
@@ -1924,9 +1979,10 @@ def _horde_add_member(player, horde, add=1):
 def _summon_from_spell(player, sid):
     if sid == 'summon_afterimage':
         pouv = max(0, _spell_pouv(player))
+        pouv_eff = max(0.0, pouv * _summon_softcap_mult(player))
         hp_coeff = float(BALANCE.get('summon_afterimage_pouv_hp', 3.0))
         def_coeff = float(BALANCE.get('summon_afterimage_pouv_def', 0.3))
-        max_hp = max(18, int(player.max_hp * 0.45) + 8 + int(pouv * hp_coeff))
+        max_hp = max(18, int(player.max_hp * 0.45) + 8 + int(pouv_eff * hp_coeff))
         return {
             'id': 'afterimage',
             'name': 'Image rémanante',
@@ -1936,7 +1992,7 @@ def _summon_from_spell(player, sid):
             'hp': max_hp,
             'max_hp': max_hp,
             'atk': 0,
-            'defense': max(0, int(player.defense * 0.25) + int(pouv * def_coeff)),
+            'defense': max(0, int(player.defense * 0.25) + int(pouv_eff * def_coeff)),
             'crit': 0.0,
             'can_attack': False,
             'guard_ratio': 0.80,
@@ -1950,15 +2006,16 @@ def _summon_from_spell(player, sid):
     if not mdef:
         return None
     pouv = max(0, _spell_pouv(player))
+    pouv_eff = max(0.0, pouv * _summon_softcap_mult(player))
     hp_coeff = float(BALANCE.get('summon_pouv_hp', 4.0))
     atk_coeff = float(BALANCE.get('summon_pouv_atk', 0.8))
     def_coeff = float(BALANCE.get('summon_pouv_def', 0.45))
     base_hp = int(mdef['hp'] * 0.55)
     base_atk = int(mdef['atk'] * 0.55)
     base_def = int(mdef['def'] * 0.55)
-    max_hp = max(8, base_hp + 6 + int(pouv * hp_coeff))
-    atk = max(1, base_atk + 1 + int(pouv * atk_coeff))
-    defense = max(0, base_def + int(pouv * def_coeff))
+    max_hp = max(8, base_hp + 6 + int(pouv_eff * hp_coeff))
+    atk = max(1, base_atk + 1 + int(pouv_eff * atk_coeff))
+    defense = max(0, base_def + int(pouv_eff * def_coeff))
     return {
         'id': summon_id,
         'name': mdef['name'],
@@ -1967,7 +2024,7 @@ def _summon_from_spell(player, sid):
         'max_hp': max_hp,
         'atk': atk,
         'defense': defense,
-        'crit': max(0.0, min(0.35, 0.03 + pouv * 0.005)),
+        'crit': max(0.0, min(0.30, 0.03 + pouv_eff * 0.003)),
         'can_attack': True,
         'guard_ratio': 0.50,
         'source_sid': sid,
@@ -3011,14 +3068,14 @@ def _spell_damage_roll(player, spell_power, rand_min, rand_max, coeff=1.0):
 
 def _spell_heal_amount(player, spell_power, ratio=1.0):
     base = _spell_heal_base(player, spell_power)
-    return max(1, int(round(base * ratio * _spell_heal_mult(player))))
+    return max(1, int(round(base * ratio * _spell_heal_mult(player) * _spell_heal_softcap_mult(player))))
 
 def _spell_effect_details(sp, player):
     pouv = _spell_pouv(player)
     lvl = max(0, player.level - 1)
     if sp.sid == 'pulse':
-        lo = max(1, int(_spell_damage_base(player, sp.power) * 0.82 * _spell_damage_mult(player)))
-        hi = lo + 2
+        lo = max(1, int(_spell_damage_base(player, sp.power) * 0.62 * _spell_damage_mult(player)))
+        hi = lo + 1
         return f"Combat • dégâts: {lo}-{hi} (cantrip)"
     if sp.sid == 'spark':
         lo = max(1, int(_spell_damage_base(player, sp.power) * 0.92 * _spell_damage_mult(player)))
@@ -3084,10 +3141,12 @@ def _spell_effect_details(sp, player):
         if sm:
             return f"Combat/Exploration • invoque {name} (actif: {sm.get('name','?')} {sm.get('hp',0)}/{sm.get('max_hp',0)}){cd_txt}"
         if sp.sid == 'summon_afterimage':
-            pv = max(18, int(player.max_hp * 0.45) + 8 + int(pouv * float(BALANCE.get('summon_afterimage_pouv_hp', 3.0))))
+            pouv_eff = max(0.0, pouv * _summon_softcap_mult(player))
+            pv = max(18, int(player.max_hp * 0.45) + 8 + int(pouv_eff * float(BALANCE.get('summon_afterimage_pouv_hp', 3.0))))
             return f"Combat/Exploration • invoque {name} • clone non-offensif ({pv} PV) • intercepte 90%{cd_txt}"
-        pv = max(8, int((12 + sp.power * 4) + pouv * float(BALANCE.get('summon_pouv_hp', 4.0))))
-        atk = max(1, int((3 + sp.power) + pouv * float(BALANCE.get('summon_pouv_atk', 0.8))))
+        pouv_eff = max(0.0, pouv * _summon_softcap_mult(player))
+        pv = max(8, int((12 + sp.power * 4) + pouv_eff * float(BALANCE.get('summon_pouv_hp', 4.0))))
+        atk = max(1, int((3 + sp.power) + pouv_eff * float(BALANCE.get('summon_pouv_atk', 0.8))))
         return f"Combat/Exploration • invoque {name} • stats approx: {pv} PV / {atk} ATK{cd_txt}"
     if sp.sid == 'clairvoyance':
         bonus = int(round(sp.power * _spell_power_mult(player)))
@@ -3118,15 +3177,17 @@ def _spell_effect_details(sp, player):
     return "Effet inconnu"
 
 def _display_spell(sp, player):
-    return f"{sp.name} [{sp.rarity}] ({sp.kind}) — {_spell_effect_details(sp, player)}"
+    cost = _spell_slot_cost(sp)
+    return f"{sp.name} [{sp.rarity}] ({sp.kind}, coût {cost}) — {_spell_effect_details(sp, player)}"
 
 def _cast_explore_spell(player, sid, floor=None, player_pos=None):
     sp = _spell_by_id(sid)
     if not sp:
         print("Parchemin introuvable."); time.sleep(0.7)
         return player_pos, False
-    if not player.can_cast_spell():
-        print("Limite de sorts atteinte pour cet étage."); time.sleep(0.8)
+    cost = _spell_slot_cost(sp)
+    if not _spell_can_pay(player, sp):
+        print(f"Emplacements insuffisants pour ce sort (coût {cost})."); time.sleep(0.8)
         return player_pos, False
     if sid in ('summon_slime', 'summon_skeleton', 'summon_dragon', 'summon_afterimage'):
         if _active_summon(player):
@@ -3142,7 +3203,7 @@ def _cast_explore_spell(player, sid, floor=None, player_pos=None):
             return player_pos, False
         player.summon = summon
         player.summon_spell_cds[sid] = _summon_spell_cooldown_for_sid(sid)
-        player.spells_cast_this_floor += 1
+        _spend_spell_slots(player, sp)
         draw_box("Magie", [f"{sp.name}: {summon['name']} vous accompagne désormais ({summon['hp']} PV)."], width=96)
         time.sleep(0.8)
         return player_pos, True
@@ -3152,7 +3213,7 @@ def _cast_explore_spell(player, sid, floor=None, player_pos=None):
         hp_before = player.hp
         player.heal(healed)
         hp_real = max(0, player.hp - hp_before)
-        player.spells_cast_this_floor += 1
+        _spend_spell_slots(player, sp)
         draw_box("Magie", [f"{sp.name}: +{hp_real} PV."], width=72)
         time.sleep(0.8)
         return player_pos, True
@@ -3167,14 +3228,14 @@ def _cast_explore_spell(player, sid, floor=None, player_pos=None):
         player.active_explore_spells[sid] = duration
         _rebuild_floor_magic_from_active_spells(player)
         bonus = int(player.floor_specials.get('fov_bonus', 0))
-        player.spells_cast_this_floor += 1
+        _spend_spell_slots(player, sp)
         draw_box("Magie", [f"{sp.name} active: vision +{bonus} pendant {duration} étage(s)."], width=96)
         time.sleep(0.8)
         return player_pos, True
     if sid in ('prospection', 'gild_touch'):
         gain = int(sp.power * _spell_power_mult(player))
         player.gold += gain
-        player.spells_cast_this_floor += 1
+        _spend_spell_slots(player, sp)
         draw_box("Magie", [f"{sp.name}: +{gain} or transmuté."], width=72)
         time.sleep(0.8)
         return player_pos, True
@@ -3186,7 +3247,7 @@ def _cast_explore_spell(player, sid, floor=None, player_pos=None):
         player.active_explore_spells[sid] = duration
         _rebuild_floor_magic_from_active_spells(player)
         bonus = int(player.floor_specials.get('spell_defense', 0))
-        player.spells_cast_this_floor += 1
+        _spend_spell_slots(player, sp)
         draw_box("Magie", [f"{sp.name}: DEF magique +{bonus} pendant {duration} étage(s)."], width=96)
         time.sleep(0.8)
         return player_pos, True
@@ -3200,7 +3261,7 @@ def _cast_explore_spell(player, sid, floor=None, player_pos=None):
         vals = _explore_stat_spell_values(player, sid)
         crit_gain = float(vals.get('spell_crit', 0.01))
         power_gain = float(vals.get('spell_power', 0.10))
-        player.spells_cast_this_floor += 1
+        _spend_spell_slots(player, sp)
         draw_box("Magie", [f"{sp.name}: CRIT magique +{crit_gain:.2f} et puissance +{int(round(power_gain*100))}% pendant {duration} étage(s)."], width=112)
         time.sleep(0.8)
         return player_pos, True
@@ -3217,7 +3278,7 @@ def _cast_explore_spell(player, sid, floor=None, player_pos=None):
             return player_pos, False
         player_pos = dest
         player.teleport_spell_cd = _teleport_cooldown_duration(player)
-        player.spells_cast_this_floor += 1
+        _spend_spell_slots(player, sp)
         draw_box("Magie", [f"{sp.name}: vous êtes transloqué près de l'escalier de descente."], width=92)
         time.sleep(0.8)
         return player_pos, True
@@ -3414,11 +3475,15 @@ def _use_combat_consumable(player):
 def _cast_combat_spell(player, monster, depth, p_specs, combat_state):
     if not player.spellbook_unlocked:
         print("Vous n'avez pas de grimoire."); time.sleep(0.6); return False, None, None
-    if not player.can_cast_spell():
-        print("Limite de sorts atteinte pour cet étage."); time.sleep(0.7); return False, None, None
-    choices = [(i, sid) for i, sid in enumerate(player.spell_scrolls) if _spell_by_id(sid) and _spell_by_id(sid).kind == 'combat']
+    choices = []
+    for i, sid in enumerate(player.spell_scrolls):
+        sp_i = _spell_by_id(sid)
+        if not sp_i or sp_i.kind != 'combat':
+            continue
+        if _spell_can_pay(player, sp_i):
+            choices.append((i, sid))
     if not choices:
-        print("Aucun parchemin de combat disponible."); time.sleep(0.7); return False, None, None
+        print("Aucun sort de combat lançable (emplacements insuffisants)."); time.sleep(0.7); return False, None, None
 
     rows = [f"{i+1}) {_display_spell(_spell_by_id(sid), player)}" for i, (_, sid) in enumerate(choices)]
     rows += ["q) Annuler"]
@@ -3431,13 +3496,16 @@ def _cast_combat_spell(player, monster, depth, p_specs, combat_state):
 
     _inv_idx, sid = choices[int(cmd)-1]
     sp = _spell_by_id(sid)
+    cost = _spell_slot_cost(sp)
+    if not _spell_can_pay(player, sp):
+        print(f"Emplacements insuffisants pour ce sort (coût {cost})."); time.sleep(0.7); return False, None, None
     bonus = int(round(float(p_specs.get('spell_damage', 0.0))))
     spell_mult = max(0.30, float(p_specs.get('frag_spell_mult', 1.0)))
     spell_crit_chance = max(0.0, min(0.9, player.crit * 0.65 + float(p_specs.get('spell_crit', 0.0))))
     spell_crit = random.random() < spell_crit_chance
 
     if sid == 'pulse':
-        dmg = int((_spell_damage_roll(player, sp.power, 0, 2, coeff=0.82) + bonus) * spell_mult)
+        dmg = int((_spell_damage_roll(player, sp.power, 0, 1, coeff=0.62) + bonus) * spell_mult)
         if spell_crit: dmg = max(1, int(dmg * 1.65))
         monster.take_damage(dmg)
         print(c(f"{sp.name} inflige {dmg} dégâts.", Ansi.BRIGHT_MAGENTA))
@@ -3478,7 +3546,7 @@ def _cast_combat_spell(player, monster, depth, p_specs, combat_state):
             print("Une autre invocation est déjà active."); time.sleep(0.6); return False, None, None
         current_count = int(sm.get('horde_count', 0)) if sm else 0
         chance = _horde_conversion_chance(player, current_count + 1)
-        player.spells_cast_this_floor += 1
+        _spend_spell_slots(player, sp)
         if random.random() <= chance:
             if sm and sm.get('id') == 'horde':
                 _horde_add_member(player, sm, add=1)
@@ -3542,14 +3610,14 @@ def _cast_combat_spell(player, monster, depth, p_specs, combat_state):
         player.summon = summon
         player.summon_spell_cds[sid] = _summon_spell_cooldown_for_sid(sid)
         print(c(f"{sp.name}: {summon['name']} rejoint le combat ({summon['hp']} PV).", Ansi.BRIGHT_CYAN))
-        player.spells_cast_this_floor += 1
+        _spend_spell_slots(player, sp)
         return True, Ansi.BRIGHT_CYAN, 'summon'
     else:
         print("Ce sort n'est pas utilisable en combat."); time.sleep(0.6); return False, None, None
 
     if spell_crit:
         print(c("Critique de sort !", Ansi.BRIGHT_MAGENTA))
-    player.spells_cast_this_floor += 1
+    _spend_spell_slots(player, sp)
     return True, (Ansi.BRIGHT_MAGENTA if spell_crit else Ansi.BRIGHT_BLUE), 'damage'
 
 def compute_damage(attacker, defender, attacker_specs=None):
