@@ -879,7 +879,7 @@ CONSUMABLE_POOL = [
 HIGH_TIER_POTIONS = [
     Consumable('Panacée souveraine', 'heal_ultra', 120, 'Épique', 'Rend 120 PV. Très coûteuse.'),
     Consumable('Tonique du colosse', 'buff_atk_ultra', 8, 'Légendaire', 'ATK +8 (4 tours). Très rare.'),
-    Consumable('Poudre philosophale', 'summon_full_heal', 1, 'Légendaire', 'Rend tous les PV de votre invocation active.'),
+    Consumable('Poudre philosophale', 'summon_full_heal', 1, 'Épique', 'Rend tous les PV de votre invocation active.'),
 ]
 GEM_FRAGMENT_POOL = [
     Consumable('Éclat de grenat', 'frag_atk_pct', (0.06, 2), 'Commun', '+6% ATK pour les 2 prochains combats.'),
@@ -1434,6 +1434,14 @@ def item_display_color(it):
         return Ansi.BRIGHT_BLUE
     return rarity_color(getattr(it, 'rarity', 'Commun'))
 
+def rarity_tag(r):
+    return c(f"[{r}]", rarity_color(r))
+
+def _magic_tinted(text, it):
+    if not text:
+        return ''
+    return c(text, Ansi.BRIGHT_BLUE) if is_magic_item(it) else text
+
 # ========================== SCALING ==========================
 def _scaled_fraction(base, lvl, per_lvl, softcap_lvl, soft_mult):
     """Calcule 1 + bonus de scaling avec soft cap."""
@@ -1710,8 +1718,35 @@ def _spell_heal_base(player, spell_power):
     return spell_power + (lvl * lvl_coeff) + (pouv * pouv_coeff)
 
 def _spell_scroll_price(spell, depth):
-    base = {'Commun': 95, 'Rare': 180, 'Épique': 320, 'Légendaire': 560}.get(spell.rarity, 220)
-    return int((base + depth * 10) * BALANCE.get('spell_shop_price_mult', 1.0))
+    rarity_ranges = {
+        'Commun': (95, 130),
+        'Rare': (170, 190),
+        'Épique': (260, 280),
+        'Légendaire': (400, 500),
+    }
+    lo, hi = rarity_ranges.get(spell.rarity, (170, 220))
+
+    # Les cantrips restent les moins chers des communs.
+    if spell.sid in SPELL_CANTRIP_SIDS:
+        lo, hi = 100, 115
+
+    # Variations de coût selon utilité/puissance, tout en restant dans la fourchette de rareté.
+    util = 0.0
+    if spell.kind == 'explore':
+        util += 0.08
+    if spell.sid in ('teleport', 'prospection', 'gild_touch', 'call_of_dead'):
+        util += 0.10
+    if str(spell.sid).startswith('summon_'):
+        util += 0.12
+    if spell.sid in ('nova', 'comet', 'rift'):
+        util += 0.10
+    if spell.sid in ('mending', 'greater_mending'):
+        util += 0.06
+
+    power_norm = max(0.0, min(1.0, float(spell.power) / 12.0))
+    score = max(0.0, min(1.0, 0.50 * power_norm + 0.50 * util))
+    price = lo + (hi - lo) * score
+    return int(round(price * BALANCE.get('spell_shop_price_mult', 1.0)))
 
 def _pick_spell_ids(depth, known_ids, count=1, source='loot'):
     known_ids = set(known_ids or [])
@@ -1844,7 +1879,7 @@ def random_consumable(depth=0, source='loot'):
         for hp in HIGH_TIER_POTIONS:
             pool.append(hp)
             if hp.effect == 'summon_full_heal':
-                weights.append(1 if source == 'loot' else 2)
+                weights.append(2 if source == 'loot' else 4)
             else:
                 weights.append(potion_w)
         for fr in GEM_FRAGMENT_POOL:
@@ -2155,7 +2190,7 @@ def price_of(it):
         premium = {
             'heal_ultra': 180,
             'buff_atk_ultra': 240,
-            'summon_full_heal': 260,
+            'summon_full_heal': 170,
             'frag_atk_pct': 140,
             'frag_def_pct': 140,
             'frag_spell_pct': 170,
@@ -2185,11 +2220,13 @@ def price_of(it):
     )
     base_score = max(1.0, pos - neg + _special_price_score(it.special))
 
-    rarity_flat = {'Commun': 7, 'Rare': 16, '\u00c9pique': 29, 'L\u00e9gendaire': 45, '\u00c9trange': 18}
-    rarity_mult = {'Commun': 1.00, 'Rare': 1.15, '\u00c9pique': 1.24, 'L\u00e9gendaire': 1.34, '\u00c9trange': 1.10}
-    min_price = {'Commun': 8, 'Rare': 16, '\u00c9pique': 28, 'L\u00e9gendaire': 42, '\u00c9trange': 14}
+    rarity_flat = {'Commun': 7, 'Rare': 38, '\u00c9pique': 85, 'L\u00e9gendaire': 170, '\u00c9trange': 48}
+    rarity_mult = {'Commun': 1.00, 'Rare': 2.05, '\u00c9pique': 2.60, 'L\u00e9gendaire': 3.20, '\u00c9trange': 2.20}
+    min_price = {'Commun': 8, 'Rare': 75, '\u00c9pique': 145, 'L\u00e9gendaire': 260, '\u00c9trange': 95}
 
     price = rarity_flat.get(it.rarity, 8) + base_score * rarity_mult.get(it.rarity, 1.0)
+    if is_magic_item(it) and it.rarity in ('Rare', '\u00c9pique', 'L\u00e9gendaire'):
+        price = max(price + 35.0, price * 1.35)
     return int(max(min_price.get(it.rarity, 8), round(price)))
 
 def choose_floor_destination(current_depth, direction):
@@ -2714,9 +2751,19 @@ def effect_str(special):
 def item_summary(it):
     if it is None: return '—'
     if isinstance(it, Consumable):
-        return f"{it.name} [{it.rarity}] — {it.description}"
+        return f"{it.name} {rarity_tag(it.rarity)} — {it.description}"
+    if not is_magic_item(it):
+        slot_label = {'weapon': 'Arme', 'armor': 'Armure', 'accessory': 'Accessoire'}.get(it.slot, it.slot)
+        base = f"{it.name} [{slot_label}] [{it.rarity}] — {it.description} | "
+        stats = f"HP{it.hp_bonus:+} ATK{it.atk_bonus:+} DEF{it.def_bonus:+} CRIT{it.crit_bonus:+.2f}"
+        pouv_bonus = item_pouv(it)
+        if pouv_bonus:
+            stats += f" POUV{pouv_bonus:+}"
+        effects = effect_str(it.special)
+        return c(base + stats + effects, rarity_color(it.rarity))
     slot_label = {'weapon': 'Arme', 'armor': 'Armure', 'accessory': 'Accessoire'}.get(it.slot, it.slot)
-    magic_tag = " [Magique]" if is_magic_item(it) else ""
+    magic_tag = _magic_tinted(" [Magique]", it) if is_magic_item(it) else ""
+    rarity_lbl = rarity_tag(it.rarity)
     # stats colorées
     s_hp   = f"{color_label('HP')}+{color_val('HP', it.hp_bonus)}"
     s_atk  = f"{color_label('ATK')}+{color_val('ATK', it.atk_bonus)}"
@@ -2725,8 +2772,13 @@ def item_summary(it):
     s_pouv = ""
     if item_pouv(it):
         s_pouv = f" {color_label('POUV')}+{color_val('POUV', item_pouv(it))}"
-    return (f"{it.name} [{slot_label}] [{it.rarity}]{magic_tag} — {it.description} | "
-            f"{s_hp} {s_atk} {s_def} {s_crit}{s_pouv}" + effect_str(it.special))
+    details = _magic_tinted(f" — {it.description} | ", it)
+    effects = effect_str(it.special)
+    effects = _magic_tinted(effects, it) if effects else ''
+    return (
+        f"{_magic_tinted(f'{it.name} [{slot_label}] ', it)}{rarity_lbl}{magic_tag}"
+        f"{details}{s_hp} {s_atk} {s_def} {s_crit}{s_pouv}{effects}"
+    )
 
 def item_brief_stats(it):
     """Affichage compact pour shop/coffres: bonus + effets, sans légende/description."""
@@ -2734,8 +2786,25 @@ def item_brief_stats(it):
         return '—'
     if isinstance(it, Consumable):
         return item_summary(it)
+    if not is_magic_item(it):
+        slot_label = {'weapon': 'Arme', 'armor': 'Armure', 'accessory': 'Accessoire'}.get(it.slot, it.slot)
+        stats_parts = []
+        if it.hp_bonus:
+            stats_parts.append(f"HP{it.hp_bonus:+}")
+        if it.atk_bonus:
+            stats_parts.append(f"ATK{it.atk_bonus:+}")
+        if it.def_bonus:
+            stats_parts.append(f"DEF{it.def_bonus:+}")
+        if abs(float(it.crit_bonus)) > 1e-9:
+            stats_parts.append(f"CRIT{it.crit_bonus:+.2f}")
+        pouv_bonus = item_pouv(it)
+        if pouv_bonus:
+            stats_parts.append(f"POUV{pouv_bonus:+}")
+        stats_txt = " ".join(stats_parts) if stats_parts else "Aucun bonus de stats"
+        eff_txt = effect_str(it.special)
+        return c(f"{it.name} [{slot_label}] [{it.rarity}] | {stats_txt}{eff_txt}", rarity_color(it.rarity))
     slot_label = {'weapon': 'Arme', 'armor': 'Armure', 'accessory': 'Accessoire'}.get(it.slot, it.slot)
-    magic_tag = " [Magique]" if is_magic_item(it) else ""
+    magic_tag = _magic_tinted(" [Magique]", it) if is_magic_item(it) else ""
     stats_parts = []
     if it.hp_bonus:
         stats_parts.append(f"HP{it.hp_bonus:+}")
@@ -2750,14 +2819,22 @@ def item_brief_stats(it):
         stats_parts.append(f"POUV{pouv_bonus:+}")
     stats_txt = " ".join(stats_parts) if stats_parts else "Aucun bonus de stats"
     eff_txt = effect_str(it.special)
-    return f"{it.name} [{slot_label}] [{it.rarity}]{magic_tag} | {stats_txt}{eff_txt}"
+    if eff_txt:
+        eff_txt = _magic_tinted(eff_txt, it)
+    return (
+        f"{_magic_tinted(f'{it.name} [{slot_label}] ', it)}{rarity_tag(it.rarity)}{magic_tag}"
+        f"{_magic_tinted(' | ', it)}{stats_txt}{eff_txt}"
+    )
 
 def item_compact_header(it):
     if not isinstance(it, Item):
         return item_brief_stats(it)
+    if not is_magic_item(it):
+        slot_label = {'weapon': 'Arme', 'armor': 'Armure', 'accessory': 'Accessoire'}.get(it.slot, it.slot)
+        return c(f"{it.name} [{slot_label}] [{it.rarity}]", rarity_color(it.rarity))
     slot_label = {'weapon': 'Arme', 'armor': 'Armure', 'accessory': 'Accessoire'}.get(it.slot, it.slot)
-    magic_tag = " [Magique]" if is_magic_item(it) else ""
-    return f"{it.name} [{slot_label}] [{it.rarity}]{magic_tag}"
+    magic_tag = _magic_tinted(" [Magique]", it) if is_magic_item(it) else ""
+    return f"{_magic_tinted(f'{it.name} [{slot_label}] ', it)}{rarity_tag(it.rarity)}{magic_tag}"
 
 def open_stats_interface(player):
     eq_items = [it for it in player.equipment.values() if it]
@@ -2799,8 +2876,8 @@ def open_stats_interface(player):
                 continue
             slot_name = {"weapon":"Arme","armor":"Armure","accessory":"Accessoire"}.get(slot, slot)
             bonus = f"HP+{_fmt_num(it.hp_bonus)} ATK+{_fmt_num(it.atk_bonus)} DEF+{_fmt_num(it.def_bonus)} CRIT+{_fmt_num(it.crit_bonus)} POUV+{_fmt_num(item_pouv(it))}"
-            line = f"- {slot_name}: {it.name} [{it.rarity}] | {bonus}"
-            equip_rows.append(c(line, item_display_color(it)))
+            line = f"- {slot_name}: {_magic_tinted(it.name + ' ', it)}{rarity_tag(it.rarity)} | {bonus}"
+            equip_rows.append(line)
             if it.special:
                 equip_rows.append(f"  Effets: {effect_str(it.special).replace(' | Effets: ','')}")
 
@@ -2935,8 +3012,8 @@ def open_inventory(player):
             for i, it in enumerate(player.inventory, 1):
                 label = item_summary(it)
                 if not isinstance(it, Consumable):
-                    # colorer par rareté
-                    label = c(label, item_display_color(it))
+                    # déjà coloré dans item_summary (bleu magique + tag rareté coloré)
+                    pass
                 bag_rows.append(f"{i:>2}) {label}   {preview_delta(player, it)}")
 
         bag_rows.append('')
@@ -4460,7 +4537,7 @@ def open_treasure_choice(player, depth, chest_type='normal'):
             for i, it in enumerate(choices):
                 if isinstance(it, Item):
                     line = f"{i+1}) {item_compact_header(it)} | {preview_delta(player,it)}"
-                    rows.append(c(line, item_display_color(it)))
+                    rows.append(line)
                 else:
                     rows.append(f"{i+1}) {chest_item_label(it)}")
             rows += ["", f"Choisissez 1-{pick_count}, ou 'q' pour ignorer"]
@@ -4497,7 +4574,7 @@ def open_treasure_choice(player, depth, chest_type='normal'):
                     else:
                         if len(player.inventory) < player.inventory_limit:
                             player.inventory.append(it)
-                            draw_box('Trésor', [f"Vous prenez: {c(chest_item_label(it), item_display_color(it))}"], width=140)
+                            draw_box('Trésor', [f"Vous prenez: {chest_item_label(it)}"], width=140)
                             pause()
                             return True
                         else:
@@ -4541,8 +4618,9 @@ def open_shop(player, depth):
     spell_min_depth = BALANCE.get('spell_shop_min_depth', 8)
     spell_offer_chance = float(BALANCE.get('spell_shop_offer_chance', 0.6))
     if getattr(player, 'klass', '') == 'Mage':
-        spell_offer_chance += float(BALANCE.get('mage_spell_shop_offer_bonus', 0.22))
-        spell_offer_chance = min(float(BALANCE.get('mage_spell_shop_offer_cap', 0.92)), spell_offer_chance)
+        # Le Mage doit toujours pouvoir acheter au moins un parchemin en boutique.
+        spell_min_depth = 1
+        spell_offer_chance = 1.0
     if depth >= spell_min_depth and random.random() < spell_offer_chance:
         offer = _pick_spell_ids(depth, set(player.spell_scrolls), count=1, source='shop')
         if offer:
@@ -4553,6 +4631,21 @@ def open_shop(player, depth):
         seller_rows = []
         seller_rows.append(f"{c('Marchand', Ansi.BRIGHT_WHITE)} — Étage {depth}")
         seller_rows.append(f"Or dispo : {c(str(player.gold), Ansi.YELLOW)}")
+        if shop_spell_sid:
+            sp = _spell_by_id(shop_spell_sid)
+            if sp:
+                sp_price = _spell_scroll_price(sp, depth)
+                seller_rows.append("")
+                spell_kind = f"({sp.kind}, coût {_spell_slot_cost(sp)})"
+                spell_details = _spell_effect_details(sp, player)
+                line = (
+                    f"{c('Parchemin disponible :', Ansi.BRIGHT_WHITE)} "
+                    f"{c(sp.name, Ansi.BRIGHT_BLUE)} "
+                    f"{rarity_tag(sp.rarity)} "
+                    f"{c(spell_kind + ' — ' + spell_details, Ansi.BRIGHT_BLUE)} "
+                    f"{c(f'({sp_price} or)', Ansi.BRIGHT_WHITE)}"
+                )
+                seller_rows.append(line)
         seller_rows.append('')
         if not stock:
             seller_rows.append(c('(Rupture de stock)', Ansi.BRIGHT_BLACK))
@@ -4561,7 +4654,6 @@ def open_shop(player, depth):
                 price = price_of(it)
                 if not isinstance(it, Consumable):
                     label = f"{item_compact_header(it)} | {preview_delta(player, it)}"
-                    label = c(label, item_display_color(it))
                     seller_rows.append(f"{i:>2}) {label}  — {price} or")
                 else:
                     label = item_brief_stats(it)
@@ -4572,8 +4664,9 @@ def open_shop(player, depth):
         seller_rows.append(f" - k : acheter 1 clé normale ({normal_key_price} or) [stock: {normal_key_stock}]")
         if shop_spell_sid:
             sp = _spell_by_id(shop_spell_sid)
-            sp_price = _spell_scroll_price(sp, depth)
-            seller_rows.append(f" - p : acheter parchemin {sp.name} ({sp_price} or)")
+            if sp:
+                sp_price = _spell_scroll_price(sp, depth)
+                seller_rows.append(f" - p : acheter parchemin {sp.name} ({sp_price} or)")
         seller_rows.append(" - v<num> : vendre VOTRE item (voir encadré du bas)")
         seller_rows.append(" - va : vendre TOUS vos objets équipables")
         seller_rows.append(" - s<num> : détails de VOTRE item (voir encadré du bas)")
