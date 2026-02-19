@@ -2752,17 +2752,10 @@ def item_summary(it):
     if it is None: return '—'
     if isinstance(it, Consumable):
         return f"{it.name} {rarity_tag(it.rarity)} — {it.description}"
-    if not is_magic_item(it):
-        slot_label = {'weapon': 'Arme', 'armor': 'Armure', 'accessory': 'Accessoire'}.get(it.slot, it.slot)
-        base = f"{it.name} [{slot_label}] [{it.rarity}] — {it.description} | "
-        stats = f"HP{it.hp_bonus:+} ATK{it.atk_bonus:+} DEF{it.def_bonus:+} CRIT{it.crit_bonus:+.2f}"
-        pouv_bonus = item_pouv(it)
-        if pouv_bonus:
-            stats += f" POUV{pouv_bonus:+}"
-        effects = effect_str(it.special)
-        return c(base + stats + effects, rarity_color(it.rarity))
+    is_magic = is_magic_item(it)
     slot_label = {'weapon': 'Arme', 'armor': 'Armure', 'accessory': 'Accessoire'}.get(it.slot, it.slot)
-    magic_tag = _magic_tinted(" [Magique]", it) if is_magic_item(it) else ""
+    tint = (lambda txt: _magic_tinted(txt, it)) if is_magic else (lambda txt: c(txt, rarity_color(it.rarity)))
+    magic_tag = tint(" [Magique]") if is_magic else ""
     rarity_lbl = rarity_tag(it.rarity)
     # stats colorées
     s_hp   = f"{color_label('HP')}+{color_val('HP', it.hp_bonus)}"
@@ -2772,11 +2765,11 @@ def item_summary(it):
     s_pouv = ""
     if item_pouv(it):
         s_pouv = f" {color_label('POUV')}+{color_val('POUV', item_pouv(it))}"
-    details = _magic_tinted(f" — {it.description} | ", it)
+    details = tint(f" — {it.description} | ")
     effects = effect_str(it.special)
-    effects = _magic_tinted(effects, it) if effects else ''
+    effects = tint(effects) if effects else ''
     return (
-        f"{_magic_tinted(f'{it.name} [{slot_label}] ', it)}{rarity_lbl}{magic_tag}"
+        f"{tint(f'{it.name} [{slot_label}] ')}{rarity_lbl}{magic_tag}"
         f"{details}{s_hp} {s_atk} {s_def} {s_crit}{s_pouv}{effects}"
     )
 
@@ -2786,44 +2779,32 @@ def item_brief_stats(it):
         return '—'
     if isinstance(it, Consumable):
         return item_summary(it)
-    if not is_magic_item(it):
-        slot_label = {'weapon': 'Arme', 'armor': 'Armure', 'accessory': 'Accessoire'}.get(it.slot, it.slot)
-        stats_parts = []
-        if it.hp_bonus:
-            stats_parts.append(f"HP{it.hp_bonus:+}")
-        if it.atk_bonus:
-            stats_parts.append(f"ATK{it.atk_bonus:+}")
-        if it.def_bonus:
-            stats_parts.append(f"DEF{it.def_bonus:+}")
-        if abs(float(it.crit_bonus)) > 1e-9:
-            stats_parts.append(f"CRIT{it.crit_bonus:+.2f}")
-        pouv_bonus = item_pouv(it)
-        if pouv_bonus:
-            stats_parts.append(f"POUV{pouv_bonus:+}")
-        stats_txt = " ".join(stats_parts) if stats_parts else "Aucun bonus de stats"
-        eff_txt = effect_str(it.special)
-        return c(f"{it.name} [{slot_label}] [{it.rarity}] | {stats_txt}{eff_txt}", rarity_color(it.rarity))
+    is_magic = is_magic_item(it)
     slot_label = {'weapon': 'Arme', 'armor': 'Armure', 'accessory': 'Accessoire'}.get(it.slot, it.slot)
-    magic_tag = _magic_tinted(" [Magique]", it) if is_magic_item(it) else ""
+    tint = (lambda txt: _magic_tinted(txt, it)) if is_magic else (lambda txt: c(txt, rarity_color(it.rarity)))
+    magic_tag = tint(" [Magique]") if is_magic else ""
     stats_parts = []
     if it.hp_bonus:
-        stats_parts.append(f"HP{it.hp_bonus:+}")
+        stats_parts.append(f"{color_label('HP')}{it.hp_bonus:+}")
     if it.atk_bonus:
-        stats_parts.append(f"ATK{it.atk_bonus:+}")
+        stats_parts.append(f"{color_label('ATK')}{it.atk_bonus:+}")
     if it.def_bonus:
-        stats_parts.append(f"DEF{it.def_bonus:+}")
+        stats_parts.append(f"{color_label('DEF')}{it.def_bonus:+}")
     if abs(float(it.crit_bonus)) > 1e-9:
-        stats_parts.append(f"CRIT{it.crit_bonus:+.2f}")
+        stats_parts.append(f"{color_label('CRIT')}{it.crit_bonus:+.2f}")
     pouv_bonus = item_pouv(it)
     if pouv_bonus:
-        stats_parts.append(f"POUV{pouv_bonus:+}")
-    stats_txt = " ".join(stats_parts) if stats_parts else "Aucun bonus de stats"
+        stats_parts.append(f"{color_label('POUV')}{pouv_bonus:+}")
+    if stats_parts:
+        stats_txt = " ".join(stats_parts)
+    else:
+        stats_txt = c("Aucun bonus de stats", Ansi.BRIGHT_BLACK)
     eff_txt = effect_str(it.special)
     if eff_txt:
-        eff_txt = _magic_tinted(eff_txt, it)
+        eff_txt = tint(eff_txt)
     return (
-        f"{_magic_tinted(f'{it.name} [{slot_label}] ', it)}{rarity_tag(it.rarity)}{magic_tag}"
-        f"{_magic_tinted(' | ', it)}{stats_txt}{eff_txt}"
+        f"{tint(f'{it.name} [{slot_label}] ')}{rarity_tag(it.rarity)}{magic_tag}"
+        f"{tint(' | ')}{stats_txt}{eff_txt}"
     )
 
 def item_compact_header(it):
@@ -4657,6 +4638,8 @@ def open_shop(player, depth):
                     seller_rows.append(f"{i:>2}) {label}  — {price} or")
                 else:
                     label = item_brief_stats(it)
+                    if str(getattr(it, 'effect', '')).startswith('frag_'):
+                        label = c(label, consumable_display_color(it))
                     seller_rows.append(f"{i:>2}) {label}  — {price} or")
         seller_rows.append('')
         seller_rows.append(c("Commandes :", Ansi.BRIGHT_WHITE))
