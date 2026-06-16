@@ -1,4 +1,4 @@
-"""
+﻿"""
 RPG / Roguelike terminal 
 """
 
@@ -353,8 +353,11 @@ CASINO_ICON = 'C'
 ALTAR_ICON = '+'
 LOCKED_DOOR_ICON = 'D'
 SAGE_ICON = 'S'
-HUD_CONTROLS = '[ZQSD/WASD] déplacer • E interagir • I inventaire • C stats • J journal • M grimoire • 1..0 ou &é"\'(-/è_çà sorts rapides • X quitter'
-MENU_CONTROLS = "Commandes : ZQSD/WASD se déplacer • E interagir (PNJ/boutique/autel/casino/sorcier) • I inventaire • C stats • J journal • M grimoire • 1..0 ou & é \" ' ( - / è _ ç à = sorts rapides • X quitter"
+SUBCLASS_ICON = 'A'
+TUTOR_ICON = '?'
+LORE_ICON = 'L'
+HUD_CONTROLS = '[ZQSD/WASD] déplacer • E interagir • I inventaire • C stats • J journal • M grimoire • X quitter'
+MENU_CONTROLS = "Commandes : ZQSD/WASD se déplacer • E interagir • I inventaire • C stats • J journal • M grimoire • X quitter"
 QUICK_SPELL_KEYS = {
     '&': 1, 'é': 2, '"': 3, "'": 4, '(': 5, '-': 6,
     'è': 7, '_': 8, 'ç': 9, 'à': 10,
@@ -473,20 +476,26 @@ BALANCE = {
     'mage_special_damage_mult': 0.62,
 
     # Nerfs magie / invocation (scaling POUV)
-    'spell_damage_base_lvl_coeff': 0.30,
-    'spell_damage_base_pouv_coeff': 0.90,
-    'spell_damage_mult_pouv_coeff': 0.03,
-    'spell_heal_base_lvl_coeff': 0.55,
-    'spell_heal_base_pouv_coeff': 1.40,
-    'spell_heal_mult_pouv_coeff': 0.04,
-    'horde_member_pouv_hp': 1.80,
-    'horde_member_pouv_atk': 0.45,
-    'horde_member_pouv_def': 0.22,
-    'summon_afterimage_pouv_hp': 2.00,
-    'summon_afterimage_pouv_def': 0.20,
-    'summon_pouv_hp': 2.40,
-    'summon_pouv_atk': 0.45,
-    'summon_pouv_def': 0.28,
+    'spell_damage_base_lvl_coeff': 0.24,
+    'spell_damage_base_pouv_coeff': 0.62,
+    'spell_damage_mult_pouv_coeff': 0.020,
+    'spell_heal_base_lvl_coeff': 0.30,
+    'spell_heal_base_pouv_coeff': 0.55,
+    'spell_heal_mult_pouv_coeff': 0.015,
+    'spell_heal_softcap_start': 8,
+    'spell_heal_softcap_per_pouv': 0.045,
+    'spell_heal_softcap_min': 0.40,
+    'summon_softcap_start': 8,
+    'summon_softcap_per_pouv': 0.035,
+    'summon_softcap_min': 0.45,
+    'horde_member_pouv_hp': 1.10,
+    'horde_member_pouv_atk': 0.26,
+    'horde_member_pouv_def': 0.12,
+    'summon_afterimage_pouv_hp': 1.20,
+    'summon_afterimage_pouv_def': 0.10,
+    'summon_pouv_hp': 1.30,
+    'summon_pouv_atk': 0.24,
+    'summon_pouv_def': 0.14,
     'horde_conversion_base': 0.42,
     'horde_conversion_pouv_coeff': 0.007,
     'horde_conversion_size_penalty': 0.03,
@@ -873,7 +882,7 @@ CONSUMABLE_POOL = [
 HIGH_TIER_POTIONS = [
     Consumable('Panacée souveraine', 'heal_ultra', 120, 'Épique', 'Rend 120 PV. Très coûteuse.'),
     Consumable('Tonique du colosse', 'buff_atk_ultra', 8, 'Légendaire', 'ATK +8 (4 tours). Très rare.'),
-    Consumable('Poudre philosophale', 'summon_full_heal', 1, 'Légendaire', 'Rend tous les PV de votre invocation active.'),
+    Consumable('Poudre philosophale', 'summon_full_heal', 1, 'Épique', 'Rend tous les PV de votre invocation active.'),
 ]
 GEM_FRAGMENT_POOL = [
     Consumable('Éclat de grenat', 'frag_atk_pct', (0.06, 2), 'Commun', '+6% ATK pour les 2 prochains combats.'),
@@ -991,6 +1000,14 @@ class Player(Character):
         super().__init__(**base)
         self.klass=klass
         self.level=1; self.xp=0; self.gold=40
+        self.class_chosen = False
+        self.max_depth_reached = 0
+        self.last_dungeon_depth = 0
+        self.village_ration_used = False
+        self.village_shop_checkpoint_used = None
+        self.village_shop_paid_checkpoint_used = None
+        self.village_sage_checkpoint = None
+        self.village_casino_unlocked = False
         self.inventory=[]; self.inventory_limit=14
         self.consumables = []          # ← sac dédié aux potions/consommables
         self.consumables_limit = 10
@@ -1155,15 +1172,20 @@ class Player(Character):
         _rebuild_floor_magic_from_active_spells(self)
 
     def can_cast_spell(self):
-        return self.spellbook_unlocked and _spell_casts_left(self) > 0
+        if not self.spellbook_unlocked:
+            return False
+        if _spell_casts_left(self) > 0:
+            return True
+        return any(_spell_slot_cost(_spell_by_id(sid)) == 0 for sid in self.spell_scrolls)
     
     def stats_summary(self):
         sm = _active_summon(self)
         summon_txt = "Invocation:—"
         if sm:
             summon_txt = f"Invocation:{sm.get('name','?')} {sm.get('hp',0)}/{sm.get('max_hp',0)}"
+        class_txt = self.klass if getattr(self, 'class_chosen', True) else 'À choisir'
         parts = [
-            f"Classe:{self.klass}",
+            f"Classe:{class_txt}",
             f"Niv:{self.level}",
             f"{color_label('HP')}:{hp_gauge_text(self.hp, self.max_hp)}",
             f"{color_label('ATK')}:{color_val('ATK', self.atk + self.temp_buffs['atk'])}",
@@ -1181,6 +1203,7 @@ class Player(Character):
         
     def gain_xp(self, amount):
         self.xp += amount
+        last_level_up = None
         while self.xp >= BALANCE['level_xp_threshold']:
             self.xp -= BALANCE['level_xp_threshold']
             self.level += 1
@@ -1206,9 +1229,12 @@ class Player(Character):
             # Soin partiel à chaque montée de niveau
             heal = int(self.max_hp * BALANCE.get('level_heal_ratio', 0.50))
             self.hp = min(self.max_hp, self.hp + heal)
+            last_level_up = (self.level, hp_gain, atk_gain, def_gain, pouv_gain, heal)
 
+        if last_level_up is not None:
+            lvl, hp_gain, atk_gain, def_gain, pouv_gain, heal = last_level_up
             pouv_txt = f" +POUV:{pouv_gain}" if pouv_gain > 0 else ""
-            print(c(f"*** Niveau {self.level}! +HP:{hp_gain} +ATK:{atk_gain} +DEF:{def_gain:.2f}{pouv_txt}(+{heal} PV) ***", Ansi.BRIGHT_YELLOW))
+            print(c(f"*** Niveau {lvl}! +HP:{hp_gain} +ATK:{atk_gain} +DEF:{def_gain:.2f}{pouv_txt}(+{heal} PV) ***", Ansi.BRIGHT_YELLOW))
             time.sleep(0.6)
 
 CONSUMABLE_STACK_MAX = 3
@@ -1424,6 +1450,14 @@ def item_display_color(it):
         return Ansi.BRIGHT_BLUE
     return rarity_color(getattr(it, 'rarity', 'Commun'))
 
+def rarity_tag(r):
+    return c(f"[{r}]", rarity_color(r))
+
+def _magic_tinted(text, it):
+    if not text:
+        return ''
+    return c(text, Ansi.BRIGHT_BLUE) if is_magic_item(it) else text
+
 # ========================== SCALING ==========================
 def _scaled_fraction(base, lvl, per_lvl, softcap_lvl, soft_mult):
     """Calcule 1 + bonus de scaling avec soft cap."""
@@ -1528,6 +1562,50 @@ def _spell_cast_limit(player):
 
 def _spell_casts_left(player):
     return max(0, _spell_cast_limit(player) - player.spells_cast_this_floor)
+
+SPELL_CANTRIP_SIDS = {'pulse'}
+
+def _spell_slot_cost(spell_or_sid):
+    if isinstance(spell_or_sid, str):
+        sp = _spell_by_id(spell_or_sid)
+    else:
+        sp = spell_or_sid
+    if not sp:
+        return 1
+    if sp.sid in SPELL_CANTRIP_SIDS:
+        return 0
+    return {'Rare': 1, 'Épique': 2, 'Légendaire': 3}.get(sp.rarity, 1)
+
+def _spell_can_pay(player, spell_or_sid):
+    cost = _spell_slot_cost(spell_or_sid)
+    return cost <= 0 or _spell_casts_left(player) >= cost
+
+def _spend_spell_slots(player, spell_or_sid):
+    cost = max(0, int(_spell_slot_cost(spell_or_sid)))
+    if cost > 0:
+        player.spells_cast_this_floor += cost
+    return cost
+
+def _spell_softcap_mult_from_pouv(pouv, start, per_pouv, floor_mult):
+    excess = max(0.0, float(pouv) - max(0.0, float(start)))
+    mult = 1.0 / (1.0 + excess * max(0.0, float(per_pouv)))
+    return max(float(floor_mult), min(1.0, mult))
+
+def _spell_heal_softcap_mult(player):
+    return _spell_softcap_mult_from_pouv(
+        _spell_pouv(player),
+        BALANCE.get('spell_heal_softcap_start', 8),
+        BALANCE.get('spell_heal_softcap_per_pouv', 0.045),
+        BALANCE.get('spell_heal_softcap_min', 0.40),
+    )
+
+def _summon_softcap_mult(player):
+    return _spell_softcap_mult_from_pouv(
+        _spell_pouv(player),
+        BALANCE.get('summon_softcap_start', 8),
+        BALANCE.get('summon_softcap_per_pouv', 0.035),
+        BALANCE.get('summon_softcap_min', 0.45),
+    )
 
 def _spell_pouv_breakdown(player):
     specs_pouv = max(0.0, float(player.all_specials().get('pouv', 0)))
@@ -1656,8 +1734,35 @@ def _spell_heal_base(player, spell_power):
     return spell_power + (lvl * lvl_coeff) + (pouv * pouv_coeff)
 
 def _spell_scroll_price(spell, depth):
-    base = {'Commun': 95, 'Rare': 180, 'Épique': 320, 'Légendaire': 560}.get(spell.rarity, 220)
-    return int((base + depth * 10) * BALANCE.get('spell_shop_price_mult', 1.0))
+    rarity_ranges = {
+        'Commun': (95, 130),
+        'Rare': (170, 190),
+        'Épique': (260, 280),
+        'Légendaire': (400, 500),
+    }
+    lo, hi = rarity_ranges.get(spell.rarity, (170, 220))
+
+    # Les cantrips restent les moins chers des communs.
+    if spell.sid in SPELL_CANTRIP_SIDS:
+        lo, hi = 100, 115
+
+    # Variations de coût selon utilité/puissance, tout en restant dans la fourchette de rareté.
+    util = 0.0
+    if spell.kind == 'explore':
+        util += 0.08
+    if spell.sid in ('teleport', 'prospection', 'gild_touch', 'call_of_dead'):
+        util += 0.10
+    if str(spell.sid).startswith('summon_'):
+        util += 0.12
+    if spell.sid in ('nova', 'comet', 'rift'):
+        util += 0.10
+    if spell.sid in ('mending', 'greater_mending'):
+        util += 0.06
+
+    power_norm = max(0.0, min(1.0, float(spell.power) / 12.0))
+    score = max(0.0, min(1.0, 0.50 * power_norm + 0.50 * util))
+    price = lo + (hi - lo) * score
+    return int(round(price * BALANCE.get('spell_shop_price_mult', 1.0)))
 
 def _pick_spell_ids(depth, known_ids, count=1, source='loot'):
     known_ids = set(known_ids or [])
@@ -1790,7 +1895,7 @@ def random_consumable(depth=0, source='loot'):
         for hp in HIGH_TIER_POTIONS:
             pool.append(hp)
             if hp.effect == 'summon_full_heal':
-                weights.append(1 if source == 'loot' else 2)
+                weights.append(2 if source == 'loot' else 4)
             else:
                 weights.append(potion_w)
         for fr in GEM_FRAGMENT_POOL:
@@ -1825,14 +1930,15 @@ def _afterimage_sprite(player):
 
 def _horde_member_stats(player):
     pouv = max(0, _spell_pouv(player))
+    pouv_eff = max(0.0, pouv * _summon_softcap_mult(player))
     hp_coeff = float(BALANCE.get('horde_member_pouv_hp', 2.6))
     atk_coeff = float(BALANCE.get('horde_member_pouv_atk', 0.75))
     def_coeff = float(BALANCE.get('horde_member_pouv_def', 0.35))
     return {
-        'hp': max(8, 12 + int(pouv * hp_coeff)),
-        'atk': max(1, 3 + int(pouv * atk_coeff)),
-        'defense': max(0, 1 + int(pouv * def_coeff)),
-        'crit': max(0.0, min(0.35, 0.02 + pouv * 0.003)),
+        'hp': max(8, 12 + int(pouv_eff * hp_coeff)),
+        'atk': max(1, 3 + int(pouv_eff * atk_coeff)),
+        'defense': max(0, 1 + int(pouv_eff * def_coeff)),
+        'crit': max(0.0, min(0.30, 0.02 + pouv_eff * 0.002)),
     }
 
 def _horde_map_sprite(count):
@@ -1924,9 +2030,10 @@ def _horde_add_member(player, horde, add=1):
 def _summon_from_spell(player, sid):
     if sid == 'summon_afterimage':
         pouv = max(0, _spell_pouv(player))
+        pouv_eff = max(0.0, pouv * _summon_softcap_mult(player))
         hp_coeff = float(BALANCE.get('summon_afterimage_pouv_hp', 3.0))
         def_coeff = float(BALANCE.get('summon_afterimage_pouv_def', 0.3))
-        max_hp = max(18, int(player.max_hp * 0.45) + 8 + int(pouv * hp_coeff))
+        max_hp = max(18, int(player.max_hp * 0.45) + 8 + int(pouv_eff * hp_coeff))
         return {
             'id': 'afterimage',
             'name': 'Image rémanante',
@@ -1936,7 +2043,7 @@ def _summon_from_spell(player, sid):
             'hp': max_hp,
             'max_hp': max_hp,
             'atk': 0,
-            'defense': max(0, int(player.defense * 0.25) + int(pouv * def_coeff)),
+            'defense': max(0, int(player.defense * 0.25) + int(pouv_eff * def_coeff)),
             'crit': 0.0,
             'can_attack': False,
             'guard_ratio': 0.80,
@@ -1950,15 +2057,16 @@ def _summon_from_spell(player, sid):
     if not mdef:
         return None
     pouv = max(0, _spell_pouv(player))
+    pouv_eff = max(0.0, pouv * _summon_softcap_mult(player))
     hp_coeff = float(BALANCE.get('summon_pouv_hp', 4.0))
     atk_coeff = float(BALANCE.get('summon_pouv_atk', 0.8))
     def_coeff = float(BALANCE.get('summon_pouv_def', 0.45))
     base_hp = int(mdef['hp'] * 0.55)
     base_atk = int(mdef['atk'] * 0.55)
     base_def = int(mdef['def'] * 0.55)
-    max_hp = max(8, base_hp + 6 + int(pouv * hp_coeff))
-    atk = max(1, base_atk + 1 + int(pouv * atk_coeff))
-    defense = max(0, base_def + int(pouv * def_coeff))
+    max_hp = max(8, base_hp + 6 + int(pouv_eff * hp_coeff))
+    atk = max(1, base_atk + 1 + int(pouv_eff * atk_coeff))
+    defense = max(0, base_def + int(pouv_eff * def_coeff))
     return {
         'id': summon_id,
         'name': mdef['name'],
@@ -1967,7 +2075,7 @@ def _summon_from_spell(player, sid):
         'max_hp': max_hp,
         'atk': atk,
         'defense': defense,
-        'crit': max(0.0, min(0.35, 0.03 + pouv * 0.005)),
+        'crit': max(0.0, min(0.30, 0.03 + pouv_eff * 0.003)),
         'can_attack': True,
         'guard_ratio': 0.50,
         'source_sid': sid,
@@ -2098,7 +2206,7 @@ def price_of(it):
         premium = {
             'heal_ultra': 180,
             'buff_atk_ultra': 240,
-            'summon_full_heal': 260,
+            'summon_full_heal': 170,
             'frag_atk_pct': 140,
             'frag_def_pct': 140,
             'frag_spell_pct': 170,
@@ -2128,11 +2236,13 @@ def price_of(it):
     )
     base_score = max(1.0, pos - neg + _special_price_score(it.special))
 
-    rarity_flat = {'Commun': 7, 'Rare': 16, '\u00c9pique': 29, 'L\u00e9gendaire': 45, '\u00c9trange': 18}
-    rarity_mult = {'Commun': 1.00, 'Rare': 1.15, '\u00c9pique': 1.24, 'L\u00e9gendaire': 1.34, '\u00c9trange': 1.10}
-    min_price = {'Commun': 8, 'Rare': 16, '\u00c9pique': 28, 'L\u00e9gendaire': 42, '\u00c9trange': 14}
+    rarity_flat = {'Commun': 7, 'Rare': 38, '\u00c9pique': 85, 'L\u00e9gendaire': 170, '\u00c9trange': 48}
+    rarity_mult = {'Commun': 1.00, 'Rare': 2.05, '\u00c9pique': 2.60, 'L\u00e9gendaire': 3.20, '\u00c9trange': 2.20}
+    min_price = {'Commun': 8, 'Rare': 75, '\u00c9pique': 145, 'L\u00e9gendaire': 260, '\u00c9trange': 95}
 
     price = rarity_flat.get(it.rarity, 8) + base_score * rarity_mult.get(it.rarity, 1.0)
+    if is_magic_item(it) and it.rarity in ('Rare', '\u00c9pique', 'L\u00e9gendaire'):
+        price = max(price + 35.0, price * 1.35)
     return int(max(min_price.get(it.rarity, 8), round(price)))
 
 def choose_floor_destination(current_depth, direction):
@@ -2488,6 +2598,23 @@ def open_altar(player, depth):
     draw_box("Sanctuaire ancien", rows, width=88)
     cmd = input("> ").strip().lower()
     if cmd in ("q", ""):
+        clear_screen()
+        draw_box("Sanctuaire ancien", [
+            "Les deux révélations tremblent, prêtes à se refermer.",
+            "Si vous détournez le regard, l'autel se consumera sans rien offrir.",
+            "",
+            "Êtes-vous sûr de ne rien choisir ?",
+            "o) Oui, laisser l'autel s'éteindre",
+            "n) Non, revenir au choix",
+        ], width=92)
+        confirm = input("> ").strip().lower()
+        if confirm in ("o", "y"):
+            draw_box("Sanctuaire éteint", [
+                "Vous refusez les révélations.",
+                "La pierre se fend dans un soupir froid. L'autel ne répondra plus.",
+            ], width=92)
+            pause()
+            return True
         return False
     if cmd not in ("1", "2"):
         print("Choix invalide."); time.sleep(0.6)
@@ -2657,9 +2784,12 @@ def effect_str(special):
 def item_summary(it):
     if it is None: return '—'
     if isinstance(it, Consumable):
-        return f"{it.name} [{it.rarity}] — {it.description}"
+        return f"{it.name} {rarity_tag(it.rarity)} — {it.description}"
+    is_magic = is_magic_item(it)
     slot_label = {'weapon': 'Arme', 'armor': 'Armure', 'accessory': 'Accessoire'}.get(it.slot, it.slot)
-    magic_tag = " [Magique]" if is_magic_item(it) else ""
+    tint = (lambda txt: _magic_tinted(txt, it)) if is_magic else (lambda txt: c(txt, rarity_color(it.rarity)))
+    magic_tag = tint(" [Magique]") if is_magic else ""
+    rarity_lbl = rarity_tag(it.rarity)
     # stats colorées
     s_hp   = f"{color_label('HP')}+{color_val('HP', it.hp_bonus)}"
     s_atk  = f"{color_label('ATK')}+{color_val('ATK', it.atk_bonus)}"
@@ -2668,8 +2798,13 @@ def item_summary(it):
     s_pouv = ""
     if item_pouv(it):
         s_pouv = f" {color_label('POUV')}+{color_val('POUV', item_pouv(it))}"
-    return (f"{it.name} [{slot_label}] [{it.rarity}]{magic_tag} — {it.description} | "
-            f"{s_hp} {s_atk} {s_def} {s_crit}{s_pouv}" + effect_str(it.special))
+    details = tint(f" — {it.description} | ")
+    effects = effect_str(it.special)
+    effects = tint(effects) if effects else ''
+    return (
+        f"{tint(f'{it.name} [{slot_label}] ')}{rarity_lbl}{magic_tag}"
+        f"{details}{s_hp} {s_atk} {s_def} {s_crit}{s_pouv}{effects}"
+    )
 
 def item_brief_stats(it):
     """Affichage compact pour shop/coffres: bonus + effets, sans légende/description."""
@@ -2677,30 +2812,43 @@ def item_brief_stats(it):
         return '—'
     if isinstance(it, Consumable):
         return item_summary(it)
+    is_magic = is_magic_item(it)
     slot_label = {'weapon': 'Arme', 'armor': 'Armure', 'accessory': 'Accessoire'}.get(it.slot, it.slot)
-    magic_tag = " [Magique]" if is_magic_item(it) else ""
+    tint = (lambda txt: _magic_tinted(txt, it)) if is_magic else (lambda txt: c(txt, rarity_color(it.rarity)))
+    magic_tag = tint(" [Magique]") if is_magic else ""
     stats_parts = []
     if it.hp_bonus:
-        stats_parts.append(f"HP{it.hp_bonus:+}")
+        stats_parts.append(f"{color_label('HP')}{it.hp_bonus:+}")
     if it.atk_bonus:
-        stats_parts.append(f"ATK{it.atk_bonus:+}")
+        stats_parts.append(f"{color_label('ATK')}{it.atk_bonus:+}")
     if it.def_bonus:
-        stats_parts.append(f"DEF{it.def_bonus:+}")
+        stats_parts.append(f"{color_label('DEF')}{it.def_bonus:+}")
     if abs(float(it.crit_bonus)) > 1e-9:
-        stats_parts.append(f"CRIT{it.crit_bonus:+.2f}")
+        stats_parts.append(f"{color_label('CRIT')}{it.crit_bonus:+.2f}")
     pouv_bonus = item_pouv(it)
     if pouv_bonus:
-        stats_parts.append(f"POUV{pouv_bonus:+}")
-    stats_txt = " ".join(stats_parts) if stats_parts else "Aucun bonus de stats"
+        stats_parts.append(f"{color_label('POUV')}{pouv_bonus:+}")
+    if stats_parts:
+        stats_txt = " ".join(stats_parts)
+    else:
+        stats_txt = c("Aucun bonus de stats", Ansi.BRIGHT_BLACK)
     eff_txt = effect_str(it.special)
-    return f"{it.name} [{slot_label}] [{it.rarity}]{magic_tag} | {stats_txt}{eff_txt}"
+    if eff_txt:
+        eff_txt = tint(eff_txt)
+    return (
+        f"{tint(f'{it.name} [{slot_label}] ')}{rarity_tag(it.rarity)}{magic_tag}"
+        f"{tint(' | ')}{stats_txt}{eff_txt}"
+    )
 
 def item_compact_header(it):
     if not isinstance(it, Item):
         return item_brief_stats(it)
+    if not is_magic_item(it):
+        slot_label = {'weapon': 'Arme', 'armor': 'Armure', 'accessory': 'Accessoire'}.get(it.slot, it.slot)
+        return c(f"{it.name} [{slot_label}] [{it.rarity}]", rarity_color(it.rarity))
     slot_label = {'weapon': 'Arme', 'armor': 'Armure', 'accessory': 'Accessoire'}.get(it.slot, it.slot)
-    magic_tag = " [Magique]" if is_magic_item(it) else ""
-    return f"{it.name} [{slot_label}] [{it.rarity}]{magic_tag}"
+    magic_tag = _magic_tinted(" [Magique]", it) if is_magic_item(it) else ""
+    return f"{_magic_tinted(f'{it.name} [{slot_label}] ', it)}{rarity_tag(it.rarity)}{magic_tag}"
 
 def open_stats_interface(player):
     eq_items = [it for it in player.equipment.values() if it]
@@ -2742,8 +2890,8 @@ def open_stats_interface(player):
                 continue
             slot_name = {"weapon":"Arme","armor":"Armure","accessory":"Accessoire"}.get(slot, slot)
             bonus = f"HP+{_fmt_num(it.hp_bonus)} ATK+{_fmt_num(it.atk_bonus)} DEF+{_fmt_num(it.def_bonus)} CRIT+{_fmt_num(it.crit_bonus)} POUV+{_fmt_num(item_pouv(it))}"
-            line = f"- {slot_name}: {it.name} [{it.rarity}] | {bonus}"
-            equip_rows.append(c(line, item_display_color(it)))
+            line = f"- {slot_name}: {_magic_tinted(it.name + ' ', it)}{rarity_tag(it.rarity)} | {bonus}"
+            equip_rows.append(line)
             if it.special:
                 equip_rows.append(f"  Effets: {effect_str(it.special).replace(' | Effets: ','')}")
 
@@ -2878,8 +3026,8 @@ def open_inventory(player):
             for i, it in enumerate(player.inventory, 1):
                 label = item_summary(it)
                 if not isinstance(it, Consumable):
-                    # colorer par rareté
-                    label = c(label, item_display_color(it))
+                    # déjà coloré dans item_summary (bleu magique + tag rareté coloré)
+                    pass
                 bag_rows.append(f"{i:>2}) {label}   {preview_delta(player, it)}")
 
         bag_rows.append('')
@@ -3011,14 +3159,14 @@ def _spell_damage_roll(player, spell_power, rand_min, rand_max, coeff=1.0):
 
 def _spell_heal_amount(player, spell_power, ratio=1.0):
     base = _spell_heal_base(player, spell_power)
-    return max(1, int(round(base * ratio * _spell_heal_mult(player))))
+    return max(1, int(round(base * ratio * _spell_heal_mult(player) * _spell_heal_softcap_mult(player))))
 
 def _spell_effect_details(sp, player):
     pouv = _spell_pouv(player)
     lvl = max(0, player.level - 1)
     if sp.sid == 'pulse':
-        lo = max(1, int(_spell_damage_base(player, sp.power) * 0.82 * _spell_damage_mult(player)))
-        hi = lo + 2
+        lo = max(1, int(_spell_damage_base(player, sp.power) * 0.62 * _spell_damage_mult(player)))
+        hi = lo + 1
         return f"Combat • dégâts: {lo}-{hi} (cantrip)"
     if sp.sid == 'spark':
         lo = max(1, int(_spell_damage_base(player, sp.power) * 0.92 * _spell_damage_mult(player)))
@@ -3084,10 +3232,12 @@ def _spell_effect_details(sp, player):
         if sm:
             return f"Combat/Exploration • invoque {name} (actif: {sm.get('name','?')} {sm.get('hp',0)}/{sm.get('max_hp',0)}){cd_txt}"
         if sp.sid == 'summon_afterimage':
-            pv = max(18, int(player.max_hp * 0.45) + 8 + int(pouv * float(BALANCE.get('summon_afterimage_pouv_hp', 3.0))))
+            pouv_eff = max(0.0, pouv * _summon_softcap_mult(player))
+            pv = max(18, int(player.max_hp * 0.45) + 8 + int(pouv_eff * float(BALANCE.get('summon_afterimage_pouv_hp', 3.0))))
             return f"Combat/Exploration • invoque {name} • clone non-offensif ({pv} PV) • intercepte 90%{cd_txt}"
-        pv = max(8, int((12 + sp.power * 4) + pouv * float(BALANCE.get('summon_pouv_hp', 4.0))))
-        atk = max(1, int((3 + sp.power) + pouv * float(BALANCE.get('summon_pouv_atk', 0.8))))
+        pouv_eff = max(0.0, pouv * _summon_softcap_mult(player))
+        pv = max(8, int((12 + sp.power * 4) + pouv_eff * float(BALANCE.get('summon_pouv_hp', 4.0))))
+        atk = max(1, int((3 + sp.power) + pouv_eff * float(BALANCE.get('summon_pouv_atk', 0.8))))
         return f"Combat/Exploration • invoque {name} • stats approx: {pv} PV / {atk} ATK{cd_txt}"
     if sp.sid == 'clairvoyance':
         bonus = int(round(sp.power * _spell_power_mult(player)))
@@ -3118,15 +3268,17 @@ def _spell_effect_details(sp, player):
     return "Effet inconnu"
 
 def _display_spell(sp, player):
-    return f"{sp.name} [{sp.rarity}] ({sp.kind}) — {_spell_effect_details(sp, player)}"
+    cost = _spell_slot_cost(sp)
+    return f"{sp.name} [{sp.rarity}] ({sp.kind}, coût {cost}) — {_spell_effect_details(sp, player)}"
 
 def _cast_explore_spell(player, sid, floor=None, player_pos=None):
     sp = _spell_by_id(sid)
     if not sp:
         print("Parchemin introuvable."); time.sleep(0.7)
         return player_pos, False
-    if not player.can_cast_spell():
-        print("Limite de sorts atteinte pour cet étage."); time.sleep(0.8)
+    cost = _spell_slot_cost(sp)
+    if not _spell_can_pay(player, sp):
+        print(f"Emplacements insuffisants pour ce sort (coût {cost})."); time.sleep(0.8)
         return player_pos, False
     if sid in ('summon_slime', 'summon_skeleton', 'summon_dragon', 'summon_afterimage'):
         if _active_summon(player):
@@ -3142,7 +3294,7 @@ def _cast_explore_spell(player, sid, floor=None, player_pos=None):
             return player_pos, False
         player.summon = summon
         player.summon_spell_cds[sid] = _summon_spell_cooldown_for_sid(sid)
-        player.spells_cast_this_floor += 1
+        _spend_spell_slots(player, sp)
         draw_box("Magie", [f"{sp.name}: {summon['name']} vous accompagne désormais ({summon['hp']} PV)."], width=96)
         time.sleep(0.8)
         return player_pos, True
@@ -3152,7 +3304,7 @@ def _cast_explore_spell(player, sid, floor=None, player_pos=None):
         hp_before = player.hp
         player.heal(healed)
         hp_real = max(0, player.hp - hp_before)
-        player.spells_cast_this_floor += 1
+        _spend_spell_slots(player, sp)
         draw_box("Magie", [f"{sp.name}: +{hp_real} PV."], width=72)
         time.sleep(0.8)
         return player_pos, True
@@ -3167,14 +3319,14 @@ def _cast_explore_spell(player, sid, floor=None, player_pos=None):
         player.active_explore_spells[sid] = duration
         _rebuild_floor_magic_from_active_spells(player)
         bonus = int(player.floor_specials.get('fov_bonus', 0))
-        player.spells_cast_this_floor += 1
+        _spend_spell_slots(player, sp)
         draw_box("Magie", [f"{sp.name} active: vision +{bonus} pendant {duration} étage(s)."], width=96)
         time.sleep(0.8)
         return player_pos, True
     if sid in ('prospection', 'gild_touch'):
         gain = int(sp.power * _spell_power_mult(player))
         player.gold += gain
-        player.spells_cast_this_floor += 1
+        _spend_spell_slots(player, sp)
         draw_box("Magie", [f"{sp.name}: +{gain} or transmuté."], width=72)
         time.sleep(0.8)
         return player_pos, True
@@ -3186,7 +3338,7 @@ def _cast_explore_spell(player, sid, floor=None, player_pos=None):
         player.active_explore_spells[sid] = duration
         _rebuild_floor_magic_from_active_spells(player)
         bonus = int(player.floor_specials.get('spell_defense', 0))
-        player.spells_cast_this_floor += 1
+        _spend_spell_slots(player, sp)
         draw_box("Magie", [f"{sp.name}: DEF magique +{bonus} pendant {duration} étage(s)."], width=96)
         time.sleep(0.8)
         return player_pos, True
@@ -3200,7 +3352,7 @@ def _cast_explore_spell(player, sid, floor=None, player_pos=None):
         vals = _explore_stat_spell_values(player, sid)
         crit_gain = float(vals.get('spell_crit', 0.01))
         power_gain = float(vals.get('spell_power', 0.10))
-        player.spells_cast_this_floor += 1
+        _spend_spell_slots(player, sp)
         draw_box("Magie", [f"{sp.name}: CRIT magique +{crit_gain:.2f} et puissance +{int(round(power_gain*100))}% pendant {duration} étage(s)."], width=112)
         time.sleep(0.8)
         return player_pos, True
@@ -3217,7 +3369,7 @@ def _cast_explore_spell(player, sid, floor=None, player_pos=None):
             return player_pos, False
         player_pos = dest
         player.teleport_spell_cd = _teleport_cooldown_duration(player)
-        player.spells_cast_this_floor += 1
+        _spend_spell_slots(player, sp)
         draw_box("Magie", [f"{sp.name}: vous êtes transloqué près de l'escalier de descente."], width=92)
         time.sleep(0.8)
         return player_pos, True
@@ -3414,11 +3566,15 @@ def _use_combat_consumable(player):
 def _cast_combat_spell(player, monster, depth, p_specs, combat_state):
     if not player.spellbook_unlocked:
         print("Vous n'avez pas de grimoire."); time.sleep(0.6); return False, None, None
-    if not player.can_cast_spell():
-        print("Limite de sorts atteinte pour cet étage."); time.sleep(0.7); return False, None, None
-    choices = [(i, sid) for i, sid in enumerate(player.spell_scrolls) if _spell_by_id(sid) and _spell_by_id(sid).kind == 'combat']
+    choices = []
+    for i, sid in enumerate(player.spell_scrolls):
+        sp_i = _spell_by_id(sid)
+        if not sp_i or sp_i.kind != 'combat':
+            continue
+        if _spell_can_pay(player, sp_i):
+            choices.append((i, sid))
     if not choices:
-        print("Aucun parchemin de combat disponible."); time.sleep(0.7); return False, None, None
+        print("Aucun sort de combat lançable (emplacements insuffisants)."); time.sleep(0.7); return False, None, None
 
     rows = [f"{i+1}) {_display_spell(_spell_by_id(sid), player)}" for i, (_, sid) in enumerate(choices)]
     rows += ["q) Annuler"]
@@ -3431,13 +3587,16 @@ def _cast_combat_spell(player, monster, depth, p_specs, combat_state):
 
     _inv_idx, sid = choices[int(cmd)-1]
     sp = _spell_by_id(sid)
+    cost = _spell_slot_cost(sp)
+    if not _spell_can_pay(player, sp):
+        print(f"Emplacements insuffisants pour ce sort (coût {cost})."); time.sleep(0.7); return False, None, None
     bonus = int(round(float(p_specs.get('spell_damage', 0.0))))
     spell_mult = max(0.30, float(p_specs.get('frag_spell_mult', 1.0)))
     spell_crit_chance = max(0.0, min(0.9, player.crit * 0.65 + float(p_specs.get('spell_crit', 0.0))))
     spell_crit = random.random() < spell_crit_chance
 
     if sid == 'pulse':
-        dmg = int((_spell_damage_roll(player, sp.power, 0, 2, coeff=0.82) + bonus) * spell_mult)
+        dmg = int((_spell_damage_roll(player, sp.power, 0, 1, coeff=0.62) + bonus) * spell_mult)
         if spell_crit: dmg = max(1, int(dmg * 1.65))
         monster.take_damage(dmg)
         print(c(f"{sp.name} inflige {dmg} dégâts.", Ansi.BRIGHT_MAGENTA))
@@ -3478,7 +3637,7 @@ def _cast_combat_spell(player, monster, depth, p_specs, combat_state):
             print("Une autre invocation est déjà active."); time.sleep(0.6); return False, None, None
         current_count = int(sm.get('horde_count', 0)) if sm else 0
         chance = _horde_conversion_chance(player, current_count + 1)
-        player.spells_cast_this_floor += 1
+        _spend_spell_slots(player, sp)
         if random.random() <= chance:
             if sm and sm.get('id') == 'horde':
                 _horde_add_member(player, sm, add=1)
@@ -3542,14 +3701,14 @@ def _cast_combat_spell(player, monster, depth, p_specs, combat_state):
         player.summon = summon
         player.summon_spell_cds[sid] = _summon_spell_cooldown_for_sid(sid)
         print(c(f"{sp.name}: {summon['name']} rejoint le combat ({summon['hp']} PV).", Ansi.BRIGHT_CYAN))
-        player.spells_cast_this_floor += 1
+        _spend_spell_slots(player, sp)
         return True, Ansi.BRIGHT_CYAN, 'summon'
     else:
         print("Ce sort n'est pas utilisable en combat."); time.sleep(0.6); return False, None, None
 
     if spell_crit:
         print(c("Critique de sort !", Ansi.BRIGHT_MAGENTA))
-    player.spells_cast_this_floor += 1
+    _spend_spell_slots(player, sp)
     return True, (Ansi.BRIGHT_MAGENTA if spell_crit else Ansi.BRIGHT_BLUE), 'damage'
 
 def compute_damage(attacker, defender, attacker_specs=None):
@@ -3878,6 +4037,16 @@ def fight(player, depth, boss=False):
 # ========================== QUÊTES ==========================
 NPC_NAMES = ['Alia','Borin','Cedric','Dara','Elio','Fara','Gunnar','Hilda','Ilan','Jora']
 
+MONSTER_LORE_NAMES = {
+    'goblin': 'les fouilleurs verts',
+    'skeleton': 'les ossements qui refusent le repos',
+    'esprit': 'les esprits sans sépulture',
+    'slime': 'les boues nées des citernes anciennes',
+    'diable': 'les diables des galeries basses',
+    'bat': 'les ailes noires',
+    'dragon': 'les jeunes drakes de cendre',
+}
+
 def make_quest(kind, player_level, giver_pos, giver_name, giver_floor):
     qid = random.randint(1000,9999)
     if kind=='slay':
@@ -3890,10 +4059,47 @@ def make_quest(kind, player_level, giver_pos, giver_name, giver_floor):
     reward_gold = int(reward_gold * BALANCE['quest_gold_mult'])
     return Quest(qid, kind, target, amount, 0, giver_floor, giver_pos, giver_name, reward_xp, reward_gold, 'Active')
 
+def quest_lore_lines(q):
+    if q.type == 'slay':
+        prey = MONSTER_LORE_NAMES.get(q.target, f"les {q.target}s")
+        return [
+            "« Les pierres parlent bas, ici. Elles savent ce qui rôde derrière les portes. »",
+            f"Une engeance trouble le passage: {prey}.",
+            f"Abattez-en {q.amount}, et le donjon desserrera un peu ses dents.",
+            "",
+            f"Objectif: tuer {q.amount} {q.target}(s).",
+            f"Récompense: {q.reward_xp} XP, {q.reward_gold} or.",
+        ]
+    if q.type == 'milestone_boss':
+        return [
+            "« Les vieux paliers ont chacun leur gardien. Ils ne cèdent rien aux vivants. »",
+            f"Atteignez l'étage {q.target}, trouvez son boss, et faites taire sa cloche.",
+            "",
+            f"Objectif: vaincre le boss de l'étage {q.target}.",
+            f"Récompense: {q.reward_xp} XP, {q.reward_gold} or.",
+        ]
+    return [
+        "« Parfois, le courage ne consiste pas à tuer. Il consiste à rester debout. »",
+        f"Survivez à {q.amount} affrontements dans ces couloirs mouvants.",
+        "",
+        f"Objectif: survivre à {q.amount} combats.",
+        f"Récompense: {q.reward_xp} XP, {q.reward_gold} or.",
+    ]
+
+def make_village_contract(player, giver_pos, giver_name):
+    current = max(0, int(getattr(player, 'max_depth_reached', 0)))
+    next_gate = max(5, ((current // 5) + 1) * 5)
+    target = random.choice([next_gate, next_gate + 5, next_gate + 10])
+    difficulty_mult = 1.0 + max(0, target - next_gate) / 10.0
+    reward_xp = int((28 + target * 7) * BALANCE['quest_xp_mult'] * difficulty_mult)
+    reward_gold = int((45 + target * 11) * BALANCE['quest_gold_mult'] * difficulty_mult)
+    qid = random.randint(1000, 9999)
+    return Quest(qid, 'milestone_boss', target, 1, 0, -1, giver_pos, giver_name, reward_xp, reward_gold, 'Active')
+
 def maybe_autocomplete_quests(player):
     completed=[]
     for q in list(player.quests_active):
-        if q.type in ('slay','survive') and q.progress >= q.amount:
+        if q.type in ('slay','survive', 'milestone_boss') and q.progress >= q.amount:
             player.gain_xp(q.reward_xp)
             player.gold += q.reward_gold
             completed.append(q)
@@ -3902,7 +4108,11 @@ def maybe_autocomplete_quests(player):
             player.quests_done.append(q)
             player.quests_active = [qq for qq in player.quests_active if qq.qid != q.qid]
         lines=[f"[{q.qid}] récompense: +{q.reward_xp} XP, +{q.reward_gold} or" for q in completed]
-        draw_box('Quêtes terminées', lines, width=72); pause()
+        if '--test' in sys.argv:
+            print('Quêtes terminées: ' + ' | '.join(_ansi_re.sub('', line) for line in lines))
+            return
+        draw_box('Quêtes terminées', lines, width=72)
+        pause()
 
 # ========================== JOURNAL ==========================
 def journal(player):
@@ -3912,9 +4122,13 @@ def journal(player):
     if player.quests_active:
         rows.append('-- Actives --')
         for q in player.quests_active:
-            where = f"Étage {q.giver_floor}"
-            if q.type=='slay': rows.append(f"[{q.qid}] Chasse: {q.progress}/{q.amount} {q.target}(s) — {where}")
-            else: rows.append(f"[{q.qid}] Survie: {q.progress}/{q.amount} combats — {where}")
+            where = "Village" if q.giver_floor < 0 else f"Étage {q.giver_floor}"
+            if q.type=='slay':
+                rows.append(f"[{q.qid}] Chasse: {q.progress}/{q.amount} {q.target}(s) — {where}")
+            elif q.type == 'milestone_boss':
+                rows.append(f"[{q.qid}] Contrat: atteindre l'étage {q.target} et vaincre son boss — {q.progress}/{q.amount} — {where}")
+            else:
+                rows.append(f"[{q.qid}] Survie: {q.progress}/{q.amount} combats — {where}")
     if player.quests_done:
         rows.append('')
         rows.append('-- Terminées --')
@@ -4031,6 +4245,9 @@ class Floor:
                 self.casinos.add(cpos)
                 occ.add(cpos)
 
+        # Compat: les relais dédiés ont été remplacés par le retour village via escaliers.
+        self.village_portals = set()
+
         def _pick_theme(depth):
         # Variante simple : cycler selon la profondeur
             return THEMES[depth % len(THEMES)]
@@ -4137,6 +4354,121 @@ class Floor:
             if self.grid[y][x]==FLOOR and (x,y) not in occupied: return (x,y)
         return (MAP_W//2, MAP_H//2)
 
+class VillageFloor:
+    def __init__(self):
+        self.depth = -1
+        self.is_village = True
+        self.grid = [[WALL for _ in range(MAP_W)] for _ in range(MAP_H)]
+        self.theme = {
+            'name': 'village',
+            'border': PASTEL(220, 232, 218),
+            'title': PASTEL(235, 220, 150),
+            'floor': PASTEL(160, 190, 150),
+            'wall': PASTEL(126, 108, 84),
+            'npc': PASTEL(120, 210, 220),
+            'shop': PASTEL(240, 210, 110),
+            'up': PASTEL(155, 220, 240),
+            'down': PASTEL(210, 160, 235),
+            'elite': PASTEL(230, 120, 120),
+            'item': PASTEL(230, 210, 120),
+            'player': PASTEL(160, 235, 170),
+        }
+        self._build_layout()
+        self.start = (MAP_W // 2, MAP_H - 4)
+        self.up = None
+        self.down = (MAP_W // 2, MAP_H // 2)
+        self.shops = {(9, 6)}
+        self.class_trainers = {(37, 6)}
+        self.tutorials = {(24, 4)}
+        self.icon_guides = set()
+        self.village_portals = set()
+        self.npcs = {
+            (16, 10): {'name': 'Mirelda', 'role': 'healer'},
+            (31, 11): {'name': 'Borin', 'role': 'contract'},
+            (22, 14): {'name': 'Tessa', 'role': 'icons'},
+            (MAP_W // 2 - 2, MAP_H // 2): {'name': 'Frère Aldren', 'role': 'lore'},
+        }
+        self.npc_home = {pos: pos for pos in self.npcs}
+        self.monsters = set()
+        self.items = set()
+        self.treasures = set()
+        self.boss_treasures = set()
+        self.treasure_types = {}
+        self.locked_doors = {}
+        self.sages = set()
+        self.elites = set()
+        self.altars = set()
+        self.casinos = set()
+        self.discovered = {(x, y) for y in range(MAP_H) for x in range(MAP_W)}
+        self.visible = set(self.discovered)
+        self.seen_shops = set(self.shops)
+        self.seen_npcs = set(self.npcs)
+        self.seen_stairs = {self.down}
+        self.seen_treasures = set()
+        self.seen_altars = set()
+        self.seen_casinos = set()
+        self.seen_sages = set()
+    def _rect_floor(self, x1, y1, x2, y2):
+        for y in range(max(1, y1), min(MAP_H - 1, y2 + 1)):
+            for x in range(max(1, x1), min(MAP_W - 1, x2 + 1)):
+                self.grid[y][x] = FLOOR
+
+    def _building(self, x1, y1, x2, y2, door):
+        for y in range(y1, y2 + 1):
+            for x in range(x1, x2 + 1):
+                self.grid[y][x] = WALL
+        for y in range(y1 + 1, y2):
+            for x in range(x1 + 1, x2):
+                self.grid[y][x] = FLOOR
+        dx, dy = door
+        if 0 <= dx < MAP_W and 0 <= dy < MAP_H:
+            self.grid[dy][dx] = FLOOR
+
+    def _build_layout(self):
+        self._rect_floor(2, 2, MAP_W - 3, MAP_H - 3)
+        for x in range(4, MAP_W - 4):
+            self.grid[MAP_H // 2][x] = FLOOR
+        for y in range(3, MAP_H - 3):
+            self.grid[y][MAP_W // 2] = FLOOR
+        self._building(4, 3, 14, 8, (9, 8))
+        self._building(33, 3, 44, 8, (38, 8))
+        self._building(18, 2, 30, 6, (24, 6))
+        self._building(12, 12, 20, 17, (16, 12))
+        self._building(28, 13, 38, 17, (33, 13))
+        for x in range(19, 30):
+            self.grid[15][x] = FLOOR
+        for y in range(7, 16):
+            self.grid[y][24] = FLOOR
+
+    def tick_npcs(self, player_pos):
+        if random.random() > 0.45:
+            return
+        occupied = set(self.npcs) | {player_pos, self.down} | set(self.shops) | set(self.class_trainers) | set(self.tutorials) | set(self.icon_guides) | set(self.sages)
+        for pos, npc in list(self.npcs.items()):
+            if npc.get('role') == 'lore':
+                continue
+            if random.random() > 0.35:
+                continue
+            home = self.npc_home.get(pos, pos)
+            candidates = []
+            for dx, dy in ((1,0), (-1,0), (0,1), (0,-1), (0,0)):
+                np = (pos[0] + dx, pos[1] + dy)
+                x, y = np
+                if not (0 <= x < MAP_W and 0 <= y < MAP_H):
+                    continue
+                if self.grid[y][x] == WALL or np in occupied:
+                    continue
+                if abs(x - home[0]) + abs(y - home[1]) > 3:
+                    continue
+                candidates.append(np)
+            if candidates:
+                new_pos = random.choice(candidates)
+                self.npcs.pop(pos)
+                self.npcs[new_pos] = npc
+                self.npc_home[new_pos] = home
+                occupied.discard(pos)
+                occupied.add(new_pos)
+
 # ========================== RENDU & FOG ==========================
 def box_sprite(sprite_lines):
     if not sprite_lines:
@@ -4162,6 +4494,25 @@ visible_cells = _visible_cells
 def interaction_hint(floor, player_pos):
     x, y = player_pos
     pos = (x, y)
+    if getattr(floor, 'is_village', False):
+        if pos == floor.down:
+            return "Puits du donjon — appuyez sur E pour choisir un palier."
+        if pos in getattr(floor, 'shops', set()):
+            return "Comptoir du village — appuyez sur E."
+        if pos in getattr(floor, 'class_trainers', set()):
+            return "Maître d'armes — appuyez sur E pour choisir votre classe."
+        if pos in getattr(floor, 'tutorials', set()):
+            return "Guide du village — appuyez sur E."
+        if pos in getattr(floor, 'icon_guides', set()):
+            return "Cartographe — appuyez sur E pour consulter les icônes."
+        if pos in getattr(floor, 'sages', set()):
+            return "Le Sorcier est de passage — appuyez sur E."
+        if pos in getattr(floor, 'npcs', {}):
+            if floor.npcs[pos].get('role') == 'icons':
+                return "Cartographe — appuyez sur E pour consulter les icônes."
+            if floor.npcs[pos].get('role') == 'lore':
+                return "Archiviste — appuyez sur E pour écouter le récit du donjon."
+            return "Villageois — appuyez sur E."
     if floor.up and pos == floor.up and floor.depth > 0:
         return "Escalier montant détecté — appuyez sur E."
     if pos == floor.down:
@@ -4191,7 +4542,10 @@ def render_map(floor, player_pos, player):
     # maj visibilité
     base_radius = 8
     bonus = player.all_specials().get('fov_bonus', 0)
-    visible = _visible_cells(floor, player_pos, radius=base_radius + bonus)
+    if getattr(floor, 'is_village', False):
+        visible = {(x, y) for y in range(MAP_H) for x in range(MAP_W)}
+    else:
+        visible = _visible_cells(floor, player_pos, radius=base_radius + bonus)
     floor.visible = visible
     floor.discovered |= visible
 
@@ -4218,6 +4572,9 @@ def render_map(floor, player_pos, player):
     for p in getattr(floor, 'sages', set()):
         if p in visible:
             floor.seen_sages.add(p)
+    for p in getattr(floor, 'village_portals', set()):
+        if p in visible:
+            floor.seen_stairs.add(p)
 
     # entête et bordures
     T = floor.theme
@@ -4228,7 +4585,7 @@ def render_map(floor, player_pos, player):
     border_left = c('│', T['border'])
     border_right = c('│', T['border'])
     print(c('┌' + '─' * MAP_W + '┐', T['border']))
-    title = f" Donjon — Étage {floor.depth} "
+    title = " Village — Le Hameau du Seuil " if getattr(floor, 'is_village', False) else f" Donjon — Étage {floor.depth} "
     pad = max(0, MAP_W - len(title))
     print(border_left + c(title + ' ' * pad, T['title']) + border_right)
     print(c('├' + '─' * MAP_W + '┤', T['border']))
@@ -4272,6 +4629,7 @@ def render_map(floor, player_pos, player):
     seen_shops = floor.seen_shops
     npcs = floor.npcs
     seen_npcs = floor.seen_npcs
+    items = getattr(floor, 'items', set())
     treasures = getattr(floor, 'treasures', set())
     boss_treasures = getattr(floor, 'boss_treasures', set())
     seen_treasures = floor.seen_treasures
@@ -4281,6 +4639,9 @@ def render_map(floor, player_pos, player):
     seen_casinos = floor.seen_casinos
     sages = getattr(floor, 'sages', set())
     seen_sages = floor.seen_sages
+    class_trainers = getattr(floor, 'class_trainers', set())
+    tutorials = getattr(floor, 'tutorials', set())
+    icon_guides = getattr(floor, 'icon_guides', set())
     elites = getattr(floor, 'elites', set())
     locked_doors = getattr(floor, 'locked_doors', {})
     floor_dot = c('·', T['floor'])
@@ -4305,10 +4666,20 @@ def render_map(floor, player_pos, player):
                 row_parts.append(c(STAIR_DOWN, T['down']))
             elif pos in shops and (is_vis or pos in seen_shops):
                 row_parts.append(c(SHOP_ICON, T['shop']))
+            elif pos in class_trainers and is_vis:
+                row_parts.append(c(SUBCLASS_ICON, T['elite']))
+            elif pos in tutorials and is_vis:
+                row_parts.append(c(TUTOR_ICON, T['up']))
+            elif pos in icon_guides and is_vis:
+                row_parts.append(c(TUTOR_ICON, T['npc']))
             elif pos in npcs and (is_vis or pos in seen_npcs):
-                row_parts.append(c(NPC_ICON, T['npc']))
+                role = npcs[pos].get('role') if isinstance(npcs.get(pos), dict) else None
+                icon = LORE_ICON if role == 'lore' else NPC_ICON
+                row_parts.append(c(icon, T['npc']))
             elif pos in sages and (is_vis or pos in seen_sages):
                 row_parts.append(c(SAGE_ICON, Ansi.BRIGHT_BLUE))
+            elif pos in items and is_vis:
+                row_parts.append(c(ITEM_ICON, T['item']))
             elif pos in treasures and (is_vis or pos in seen_treasures):
                 if pos in boss_treasures:
                     row_parts.append(c(TREASURE_BOSS_ICON, T['elite']))
@@ -4392,7 +4763,7 @@ def open_treasure_choice(player, depth, chest_type='normal'):
             for i, it in enumerate(choices):
                 if isinstance(it, Item):
                     line = f"{i+1}) {item_compact_header(it)} | {preview_delta(player,it)}"
-                    rows.append(c(line, item_display_color(it)))
+                    rows.append(line)
                 else:
                     rows.append(f"{i+1}) {chest_item_label(it)}")
             rows += ["", f"Choisissez 1-{pick_count}, ou 'q' pour ignorer"]
@@ -4429,7 +4800,7 @@ def open_treasure_choice(player, depth, chest_type='normal'):
                     else:
                         if len(player.inventory) < player.inventory_limit:
                             player.inventory.append(it)
-                            draw_box('Trésor', [f"Vous prenez: {c(chest_item_label(it), item_display_color(it))}"], width=140)
+                            draw_box('Trésor', [f"Vous prenez: {chest_item_label(it)}"], width=140)
                             pause()
                             return True
                         else:
@@ -4464,17 +4835,19 @@ def shop_stock_for_depth(depth):
     for _ in range(3+depth//2): stock.append(random_item(depth, DummyPlayer()))
     return stock
     
-def open_shop(player, depth):
+def open_shop(player, depth, price_mult=1.0, shop_label='Marchand'):
     BOX_W  = max(156, MAP_W + 48)
     stock = shop_stock_for_depth(depth)
     normal_key_stock = 1
-    normal_key_price = BALANCE.get('normal_key_shop_price', 70) + depth * 6
+    price_mult = max(0.1, float(price_mult))
+    normal_key_price = int(round((BALANCE.get('normal_key_shop_price', 70) + depth * 6) * price_mult))
     shop_spell_sid = None
     spell_min_depth = BALANCE.get('spell_shop_min_depth', 8)
     spell_offer_chance = float(BALANCE.get('spell_shop_offer_chance', 0.6))
     if getattr(player, 'klass', '') == 'Mage':
-        spell_offer_chance += float(BALANCE.get('mage_spell_shop_offer_bonus', 0.22))
-        spell_offer_chance = min(float(BALANCE.get('mage_spell_shop_offer_cap', 0.92)), spell_offer_chance)
+        # Le Mage doit toujours pouvoir acheter au moins un parchemin en boutique.
+        spell_min_depth = 1
+        spell_offer_chance = 1.0
     if depth >= spell_min_depth and random.random() < spell_offer_chance:
         offer = _pick_spell_ids(depth, set(player.spell_scrolls), count=1, source='shop')
         if offer:
@@ -4485,18 +4858,34 @@ def open_shop(player, depth):
         seller_rows = []
         seller_rows.append(f"{c('Marchand', Ansi.BRIGHT_WHITE)} — Étage {depth}")
         seller_rows.append(f"Or dispo : {c(str(player.gold), Ansi.YELLOW)}")
+        if shop_spell_sid:
+            sp = _spell_by_id(shop_spell_sid)
+            if sp:
+                sp_price = int(round(_spell_scroll_price(sp, depth) * price_mult))
+                seller_rows.append("")
+                spell_kind = f"({sp.kind}, coût {_spell_slot_cost(sp)})"
+                spell_details = _spell_effect_details(sp, player)
+                line = (
+                    f"{c('Parchemin disponible :', Ansi.BRIGHT_WHITE)} "
+                    f"{c(sp.name, Ansi.BRIGHT_BLUE)} "
+                    f"{rarity_tag(sp.rarity)} "
+                    f"{c(spell_kind + ' — ' + spell_details, Ansi.BRIGHT_BLUE)} "
+                    f"{c(f'({sp_price} or)', Ansi.BRIGHT_WHITE)}"
+                )
+                seller_rows.append(line)
         seller_rows.append('')
         if not stock:
             seller_rows.append(c('(Rupture de stock)', Ansi.BRIGHT_BLACK))
         else:
             for i, it in enumerate(stock, 1):
-                price = price_of(it)
+                price = int(round(price_of(it) * price_mult))
                 if not isinstance(it, Consumable):
                     label = f"{item_compact_header(it)} | {preview_delta(player, it)}"
-                    label = c(label, item_display_color(it))
                     seller_rows.append(f"{i:>2}) {label}  — {price} or")
                 else:
                     label = item_brief_stats(it)
+                    if str(getattr(it, 'effect', '')).startswith('frag_'):
+                        label = c(label, consumable_display_color(it))
                     seller_rows.append(f"{i:>2}) {label}  — {price} or")
         seller_rows.append('')
         seller_rows.append(c("Commandes :", Ansi.BRIGHT_WHITE))
@@ -4504,8 +4893,9 @@ def open_shop(player, depth):
         seller_rows.append(f" - k : acheter 1 clé normale ({normal_key_price} or) [stock: {normal_key_stock}]")
         if shop_spell_sid:
             sp = _spell_by_id(shop_spell_sid)
-            sp_price = _spell_scroll_price(sp, depth)
-            seller_rows.append(f" - p : acheter parchemin {sp.name} ({sp_price} or)")
+            if sp:
+                sp_price = int(round(_spell_scroll_price(sp, depth) * price_mult))
+                seller_rows.append(f" - p : acheter parchemin {sp.name} ({sp_price} or)")
         seller_rows.append(" - v<num> : vendre VOTRE item (voir encadré du bas)")
         seller_rows.append(" - va : vendre TOUS vos objets équipables")
         seller_rows.append(" - s<num> : détails de VOTRE item (voir encadré du bas)")
@@ -4534,7 +4924,7 @@ def open_shop(player, depth):
 
         # ==== Rendu : deux boîtes l’une sous l’autre ====
         clear_screen()
-        draw_box(f"Vendeur (Étage {depth})", seller_rows, width=BOX_W)
+        draw_box(f"Vendeur — {shop_label} (Étage {depth})", seller_rows, width=BOX_W)
         print()  # petite marge visuelle
         draw_box("Vos objets (vendre: v<num>/va  •  détails: s<num>)", player_rows, width=BOX_W)
 
@@ -4554,7 +4944,7 @@ def open_shop(player, depth):
             continue
         if cmd == 'p' and shop_spell_sid:
             sp = _spell_by_id(shop_spell_sid)
-            sp_price = _spell_scroll_price(sp, depth)
+            sp_price = int(round(_spell_scroll_price(sp, depth) * price_mult))
             if player.gold < sp_price:
                 print("Or insuffisant pour ce parchemin."); time.sleep(0.8); continue
             player.gold -= sp_price
@@ -4568,7 +4958,7 @@ def open_shop(player, depth):
             idx = int(cmd) - 1
             if 0 <= idx < len(stock):
                 it = stock[idx]
-                price = price_of(it)
+                price = int(round(price_of(it) * price_mult))
                 if player.gold < price:
                     print('Or insuffisant.'); time.sleep(0.8); continue
 
@@ -4621,6 +5011,384 @@ def open_shop(player, depth):
             continue
         print('Commande inconnue.'); time.sleep(0.6)
 
+# ========================== VILLAGE ==========================
+def _village_checkpoint_depths(max_depth):
+    max_depth = max(0, int(max_depth))
+    depths = {0, max_depth}
+    for d in range(5, max_depth + 1, 5):
+        depths.add(d)
+    return sorted(depths)
+
+def choose_village_destination(player):
+    depths = _village_checkpoint_depths(getattr(player, 'max_depth_reached', 0))
+    rows = [
+        "Le puits mène aux paliers déjà reconnus.",
+        "Les escaliers du donjon permettent aussi de revenir ici préparer la suite.",
+        "",
+    ]
+    for i, depth in enumerate(depths, 1):
+        label = "Entrée du donjon" if depth == 0 else f"Étage {depth}"
+        marker = "dernier palier atteint" if depth == getattr(player, 'max_depth_reached', 0) and depth > 0 else "palier disponible"
+        rows.append(f"{i}) {label} — {marker}")
+    rows.append("q) Annuler")
+    clear_screen()
+    draw_box("Puits du donjon", rows, width=92)
+    while True:
+        cmd = input("> ").strip().lower()
+        if cmd in ("q", "x", ""):
+            return None
+        if cmd.isdigit():
+            idx = int(cmd) - 1
+            if 0 <= idx < len(depths):
+                return depths[idx]
+        print("Choix invalide.")
+
+def choose_stair_destination(current_depth, direction):
+    """
+    Retourne ('floor', depth), ('village', None) ou None.
+    Les escaliers du donjon servent aussi de rappel vers le village.
+    """
+    if direction > 0:
+        options = [
+            ('floor', current_depth + 1, "Prudent", "danger +, loot +"),
+            ('floor', current_depth + 2, "Audacieux", "danger ++, loot ++"),
+            ('floor', current_depth + 3, "Suicidaire", "danger +++, loot +++"),
+        ]
+        title = "Escalier descendant"
+    else:
+        options = []
+        if current_depth - 1 >= 0:
+            options.append(('floor', current_depth - 1, "Retour", "plus sûr, moins de loot"))
+        if current_depth - 2 >= 0:
+            options.append(('floor', current_depth - 2, "Retraite rapide", "beaucoup plus sûr"))
+        title = "Escalier montant"
+    options.append(('village', None, "Village", "préparation, soins, marchand"))
+
+    lines = ["Choisissez votre destination :"]
+    for i, opt in enumerate(options, 1):
+        kind, depth, risk, desc = opt
+        label = "Village" if kind == 'village' else f"Étage {depth}"
+        lines.append(f" {i}) {label} — {risk} ({desc})")
+    lines.append(" q) Annuler")
+    clear_screen()
+    draw_box(title, lines, width=88)
+
+    while True:
+        cmd = input("> ").strip().lower()
+        if cmd in ("q", "x", ""):
+            return None
+        if cmd.isdigit():
+            idx = int(cmd) - 1
+            if 0 <= idx < len(options):
+                kind, depth, _, _ = options[idx]
+                return (kind, depth)
+        print("Choix invalide.")
+
+def apply_player_class_choice(player, klass):
+    if getattr(player, 'class_chosen', False):
+        return False
+    k = (klass or '').strip().lower()
+    if k in ('guerrier', 'chevalier', 'warrior'):
+        player.klass = 'Guerrier'
+        player.max_hp = 36
+        player.hp = player.max_hp
+        player.atk = 10
+        player.defense = 5
+        player.crit = 0.06
+        player.map_icon = PLAYER_ICON
+        player.sprite = SPRITES.get('knight', [])
+        player.level_gain_mult = {'hp': 1.0, 'atk': 1.0, 'def': 1.0}
+        player.mage_core = False
+    elif k == 'mage':
+        player.klass = 'Mage'
+        player.max_hp = 24
+        player.hp = player.max_hp
+        player.atk = 6
+        player.defense = 2
+        player.crit = 0.08
+        player.map_icon = '&'
+        player.sprite = SPRITES.get('mage', SPRITES.get('knight', []))
+        player.level_gain_mult = {
+            'hp': float(BALANCE.get('mage_level_hp_mult', 0.90)),
+            'atk': float(BALANCE.get('mage_level_atk_mult', 0.65)),
+            'def': float(BALANCE.get('mage_level_def_mult', 0.65)),
+        }
+        player.mage_core = True
+        player.spellbook_unlocked = True
+        if not player.spell_scrolls:
+            starter = _pick_spell_ids(0, set(), count=1, source='loot')
+            player.spell_scrolls = starter[:] if starter else ['pulse']
+        player.passive_specials['pouv'] = max(3, int(player.passive_specials.get('pouv', 0)))
+    else:
+        return False
+    player.class_chosen = True
+    player.recompute_altar_dynamic_effects()
+    return True
+
+def open_class_trainer(player):
+    clear_screen()
+    if getattr(player, 'class_chosen', False):
+        draw_box("Maître d'armes", [
+            "« Une lame ne change pas de serment au milieu du gué. »",
+            f"Votre voie est déjà fixée: {player.klass}.",
+            "Le choix de classe est unique pour cette partie.",
+        ], width=82)
+        pause()
+        return
+    rows = [
+        "« Le puits réclame une voie claire. Choisissez celle qui portera votre nom. »",
+        "Ce choix est définitif.",
+        "",
+        "1) Guerrier — robuste, équilibré, progression martiale.",
+        "2) Mage — grimoire + 1 sort dès le début, POUV élevée, ATK/DEF plus faibles.",
+        "q) Plus tard",
+    ]
+    draw_box("Maître d'armes", rows, width=104)
+    cmd = input("> ").strip().lower()
+    picked = {'1': 'guerrier', 'g': 'guerrier', 'guerrier': 'guerrier', '2': 'mage', 'm': 'mage', 'mage': 'mage'}.get(cmd)
+    if not picked:
+        return
+    if apply_player_class_choice(player, picked):
+        draw_box("Classe", ["« Ainsi soit marqué votre premier pas. »", f"Vous êtes désormais: {player.klass}."], width=72)
+        pause()
+
+def open_village_tutorial(player):
+    rows = [
+        "« Ce hameau tient parce que chacun sait quand descendre, et quand revenir. »",
+        "",
+        "Le village est votre zone sûre.",
+        "Choisissez d'abord votre classe auprès du maître d'armes.",
+        "Le puits central permet d'entrer dans le donjon ou de revenir aux paliers atteints.",
+        "Depuis n'importe quel escalier du donjon, vous pouvez revenir au village.",
+        "Le marchand du village propose un stock fort, mais son accès dépend de vos paliers.",
+        "Les coffres de boss et les salles verrouillées valent souvent une clé gardée en réserve.",
+    ]
+    clear_screen()
+    draw_box("Guide du village", rows, width=104)
+    pause()
+
+def open_icon_legend(player):
+    rows = [
+        "« Les signes sauvent ceux qui les lisent avant de courir. »",
+        "",
+        f"{PLAYER_ICON} / &: joueur Guerrier / Mage",
+        f"{NPC_ICON}: PNJ ou donneur d'information",
+        f"{LORE_ICON}: archiviste, récit du donjon et des combats",
+        f"{SHOP_ICON}: marchand",
+        f"{SAGE_ICON}: maître sorcier, parchemins et magie",
+        f"{STAIR_DOWN}: escalier descendant ou puits du donjon",
+        f"{STAIR_UP}: escalier montant",
+        "Escaliers: accès aux étages voisins ou retour au village",
+        f"{TREASURE_ICON}: trésor normal",
+        f"{TREASURE_BOSS_ICON}: trésor de boss",
+        f"{ELITE_ICON}: boss ou élite",
+        f"{ALTAR_ICON}: sanctuaire ancien",
+        f"{CASINO_ICON}: casino clandestin",
+        f"{LOCKED_DOOR_ICON}: porte verrouillée",
+        f"{ITEM_ICON}: trouvaille au sol",
+        f"{SUBCLASS_ICON}: maître d'armes",
+        f"{TUTOR_ICON}: guide ou cartographe",
+    ]
+    clear_screen()
+    draw_box("Cartographe — Icônes", rows, width=84)
+    pause()
+
+def open_village_healer(player, npc_name):
+    cost = max(0, 8 + player.level * 2)
+    rows = [
+        "« Les blessures du dessous gardent toujours un peu de nuit en elles. »",
+        f"{npc_name} prépare des linges chauds, des herbes amères et une eau bénite au sel.",
+        f"PV actuels: {player.hp}/{player.max_hp}",
+        "",
+        f"1) Repos complet ({cost} or)",
+        "2) Petite ration gratuite (+25% PV max, une fois par partie)",
+        "q) Quitter",
+    ]
+    clear_screen()
+    draw_box(npc_name, rows, width=82)
+    cmd = input("> ").strip().lower()
+    if cmd == "1":
+        if player.gold < cost:
+            draw_box(npc_name, ["« Même les simples coûtent cher quand les routes sont hantées. »", "Pas assez d'or pour le repos complet."], width=82); pause(); return
+        player.gold -= cost
+        player.hp = player.max_hp
+        draw_box(npc_name, ["« Voilà. Que le donjon morde moins fort la prochaine fois. »", "Vous êtes entièrement soigné."], width=82); pause(); return
+    if cmd == "2":
+        if getattr(player, 'village_ration_used', False):
+            draw_box(npc_name, ["La ration gratuite a déjà été utilisée."], width=62); pause(); return
+        before = player.hp
+        player.heal(max(1, int(player.max_hp * 0.25)))
+        player.village_ration_used = True
+        draw_box(npc_name, ["« Une ration gardée pour les pas tremblants. Prenez. »", f"Vous récupérez {player.hp - before} PV."], width=82); pause()
+
+def open_village_contract_npc(player, npc, pos):
+    clear_screen()
+    active = next((q for q in player.quests_active if q.type == 'milestone_boss'), None)
+    if active:
+        draw_box(npc.get('name', 'Borin'), quest_lore_lines(active) + ["", "« Revenez quand le gardien sera tombé. »"], width=100)
+        pause()
+        return
+    quest = make_village_contract(player, pos, npc.get('name', 'Borin'))
+    rows = quest_lore_lines(quest) + ["", "o) Sceller le contrat", "n) Refuser"]
+    draw_box(npc.get('name', 'Borin'), rows, width=92)
+    cmd = input("> ").strip().lower()
+    if cmd in ('o', 'y'):
+        player.quests_active.append(quest)
+        draw_box("Contrat accepté", ["« Que l'encre tienne jusqu'à votre retour. »", "Le contrat a été ajouté au journal de quêtes."], width=84)
+        pause()
+
+def open_lore_mentor(player, npc_name):
+    rows = [
+        "« Approche. Le puits n'est pas un trou: c'est une gueule. »",
+        "",
+        "Sous le village dort un vieux donjon qui change ses couloirs à chaque descente.",
+        "Chaque étage cache des monstres, des salles fermées, des coffres et parfois des pactes.",
+        "Les escaliers te laissent avancer, reculer, ou revenir ici reprendre souffle.",
+        "",
+        "En combat, observe l'ennemi: tes coups percent sa défense, tes critiques renversent l'issue,",
+        "et tes potions ou sorts peuvent transformer un duel perdu en retraite honorable.",
+        "Vaincre nourrit ton expérience; survivre assez longtemps attire de meilleurs trésors.",
+        "",
+        "« Ne poursuis pas seulement la profondeur. Poursuis le moment où tu peux en ressortir vivant. »",
+    ]
+    clear_screen()
+    draw_box(npc_name, rows, width=112)
+    pause()
+
+def open_village_npc(player, npc, pos=None):
+    role = npc.get('role')
+    name = npc.get('name', 'Villageois')
+    if role == 'healer':
+        open_village_healer(player, name)
+        return
+    if role == 'guide':
+        open_village_tutorial(player)
+        return
+    if role == 'icons':
+        open_icon_legend(player)
+        return
+    if role == 'contract':
+        open_village_contract_npc(player, npc, pos or (0, 0))
+        return
+    if role == 'lore':
+        open_lore_mentor(player, name)
+        return
+    rows = [
+        "« Le donjon avale les pressés et recrache leurs bottes. »",
+        "Les boutiques du dessous sont rares et parfois chères.",
+        "Revenir au village n'est pas fuir: c'est revenir avec assez de souffle pour repartir.",
+        f"Profondeur maximale reconnue: étage {getattr(player, 'max_depth_reached', 0)}.",
+    ]
+    draw_box(name, rows, width=92)
+    pause()
+
+def open_village_shop(player):
+    if not getattr(player, 'village_casino_unlocked', False):
+        clear_screen()
+        rows = [
+            "Le comptoir propose aussi des services de village.",
+            "",
+            "1) Consulter le stock du marchand",
+            "2) Acheter l'installation du casino au village (500 or)",
+            "q) Quitter",
+        ]
+        draw_box("Comptoir du village", rows, width=92)
+        cmd = input("> ").strip().lower()
+        if cmd == "2":
+            open_village_casino_broker(player)
+            return
+        if cmd not in ("1", ""):
+            return
+    clear_screen()
+    checkpoint = int(getattr(player, 'max_depth_reached', 0))
+    used = getattr(player, 'village_shop_checkpoint_used', None)
+    paid = getattr(player, 'village_shop_paid_checkpoint_used', None)
+    reroll_cost = 45 + checkpoint * 12
+    if used == checkpoint:
+        if paid == checkpoint:
+            draw_box("Comptoir du village", [
+                "Le marchand a déjà réorganisé son stock pour ce palier.",
+                "Atteignez un nouveau palier pour obtenir une nouvelle sélection.",
+            ], width=92)
+            pause()
+            return
+        rows = [
+            "Vous avez déjà consulté ce stock depuis votre dernier palier.",
+            f"Le marchand peut préparer une nouvelle caisse pour {reroll_cost} or.",
+            "Après cela, il faudra atteindre un nouveau palier.",
+            "",
+            "o) Payer et consulter",
+            "n) Annuler",
+        ]
+        draw_box("Comptoir du village", rows, width=92)
+        cmd = input("> ").strip().lower()
+        if cmd not in ('o', 'y'):
+            return
+        if player.gold < reroll_cost:
+            draw_box("Comptoir du village", ["Or insuffisant pour renouveler le stock."], width=72)
+            pause()
+            return
+        player.gold -= reroll_cost
+        player.village_shop_paid_checkpoint_used = checkpoint
+    else:
+        player.village_shop_checkpoint_used = checkpoint
+
+    depth = max(5, checkpoint + 4)
+    price_mult = 1.65 + min(0.55, checkpoint * 0.02)
+    draw_box("Comptoir du village", [
+        "Le marchand du village sort un stock rare et préparé.",
+        f"Qualité estimée: palier {depth}. Prix village: x{price_mult:.2f}.",
+    ], width=94)
+    time.sleep(0.6)
+    open_shop(player, depth, price_mult=price_mult, shop_label='Comptoir du village')
+
+def open_village_casino_broker(player):
+    cost = 500
+    clear_screen()
+    if getattr(player, 'village_casino_unlocked', False):
+        draw_box("Permis de casino", [
+            "Le casino du village est déjà installé.",
+            "Cherchez le comptoir C dans le village.",
+        ], width=78)
+        pause()
+        return
+    rows = [
+        "Un tenancier propose d'installer une table de casino permanente au village.",
+        f"Coût d'installation: {cost} or.",
+        "",
+        "o) Acheter la fonctionnalité",
+        "n) Annuler",
+    ]
+    draw_box("Permis de casino", rows, width=94)
+    cmd = input("> ").strip().lower()
+    if cmd not in ('o', 'y'):
+        return
+    if player.gold < cost:
+        draw_box("Permis de casino", [f"Il faut {cost} or pour financer l'installation."], width=72)
+        pause()
+        return
+    player.gold -= cost
+    player.village_casino_unlocked = True
+    draw_box("Casino installé", ["Une table de casino est désormais disponible au village."], width=78)
+    pause()
+
+def maybe_refresh_village_sage(village, player):
+    checkpoint = int(getattr(player, 'max_depth_reached', 0))
+    if getattr(player, 'village_sage_checkpoint', None) == checkpoint:
+        return
+    player.village_sage_checkpoint = checkpoint
+    village.sages.clear()
+    if checkpoint >= 3 and random.random() < 0.50:
+        village.sages.add((42, 14))
+    village.seen_sages = set(village.sages)
+
+def refresh_village_features(village, player):
+    if getattr(player, 'village_casino_unlocked', False):
+        village.casinos = {(33, 15)}
+    else:
+        village.casinos = set()
+    village.seen_casinos = set(village.casinos)
+
 # ========================== TITRE ==========================
 def title_menu():
     art = [
@@ -4639,7 +5407,7 @@ def title_menu():
     lines.extend(art)
     lines.append("")
     lines.append("But : descendre les étages, survivre et devenir surpuissant grâce au loot.")
-    lines.append("Fonctionnalités : quêtes PNJ, marchand, casino, autels, salles verrouillées, Sorcier & grimoire.")
+    lines.append("Fonctionnalités : village hub, choix de classe, quêtes PNJ, marchand, casino, autels, salles verrouillées, Sorcier & grimoire.")
     lines.append(MENU_CONTROLS)
     lines.append("Astuce : entre un nombre + direction (ex: 5d) ou '.' pour répéter le dernier pas.")
     clear_screen(); draw_box('ROGMINAL — Menu', lines, width=100); pause("Appuyez sur Entrée pour jouer...")
@@ -4687,6 +5455,16 @@ def _apply_combat_quest_progress(player, status, kill_id):
     if updated:
         maybe_autocomplete_quests(player)
 
+def _apply_boss_contract_progress(player, depth):
+    updated = []
+    for i, q in enumerate(list(player.quests_active)):
+        if q.type == 'milestone_boss' and int(q.target) == int(depth):
+            q = q._replace(progress=1)
+            player.quests_active[i] = q
+            updated.append(q)
+    if updated:
+        maybe_autocomplete_quests(player)
+
 def ask_restart_after_death():
     draw_box("Game Over", [
         "Votre héros est tombé.",
@@ -4724,16 +5502,21 @@ def game_loop():
     if '--test' in sys.argv:
         run_tests(); return 'tests_ok'
     title_menu()
-    chosen_class = choose_player_class()
-    player=Player('Héros', klass=chosen_class)
+    player=Player('Héros', klass='Guerrier')
     if '--debug-all-spells' in sys.argv or '--all-spells' in sys.argv:
         player.spellbook_unlocked = True
         player.spell_scrolls = [sp.sid for sp in SPELLS]
         draw_box("Debug", ["Mode debug activé: tous les sorts ont été ajoutés au grimoire."], width=92)
         time.sleep(0.8)
-    floors=[Floor(0)]; cur=0; pos=floors[0].start
+    village = VillageFloor()
+    floors=[Floor(0)]
+    cur=-1
+    pos=village.start
     while True:
-        f = floors[cur]
+        f = village if cur == -1 else floors[cur]
+        if cur == -1:
+            maybe_refresh_village_sage(village, player)
+            refresh_village_features(village, player)
         render_map(f, pos, player)
         kind, payload = read_command(player.last_move)
         act = None  # Initialisation pour éviter UnboundLocalError
@@ -4759,23 +5542,90 @@ def game_loop():
         if act == 'm':
             pos = open_spellbook(player, f.depth, f, pos); continue
         if act == 'e':
-            if f.up and pos == f.up and cur > 0:
-                target = choose_floor_destination(cur, direction=-1)
+            if getattr(f, 'is_village', False):
+                if pos == f.down:
+                    if not getattr(player, 'class_chosen', False):
+                        clear_screen()
+                        draw_box("Puits du donjon", [
+                            "Le puits reste silencieux.",
+                            "Choisissez d'abord votre classe auprès du maître d'armes.",
+                        ], width=82)
+                        pause()
+                        continue
+                    target = choose_village_destination(player)
+                    if target is not None:
+                        while target >= len(floors):
+                            floors.append(Floor(len(floors)))
+                        cur = target
+                        f = floors[cur]
+                        pos = f.up if f.up else f.start
+                        player.last_dungeon_depth = cur
+                        player.max_depth_reached = max(player.max_depth_reached, cur)
+                        player.reset_floor_magic()
+                        clear_screen()
+                        draw_box('Donjon', [f"Vous entrez à l'étage {cur}."], width=52); time.sleep(0.5)
+                elif pos in f.shops:
+                    open_village_shop(player)
+                elif pos in getattr(f, 'class_trainers', set()):
+                    open_class_trainer(player)
+                elif pos in getattr(f, 'tutorials', set()):
+                    open_village_tutorial(player)
+                elif pos in getattr(f, 'icon_guides', set()):
+                    open_icon_legend(player)
+                elif pos in getattr(f, 'sages', set()):
+                    _picked = open_sage_spell_offer(player, max(3, player.max_depth_reached + 1))
+                    f.sages.discard(pos)
+                    f.seen_sages.discard(pos)
+                elif pos in getattr(f, 'casinos', set()):
+                    open_casino(player, max(1, player.max_depth_reached))
+                elif pos in f.npcs:
+                    open_village_npc(player, f.npcs[pos], pos)
+                else:
+                    print("Rien d'interactif ici."); time.sleep(0.5)
+            elif f.up and pos == f.up and cur > 0:
+                target = choose_stair_destination(cur, direction=-1)
                 if target is not None:
-                    cur = target
+                    if target[0] == 'village':
+                        player.last_dungeon_depth = cur
+                        player.max_depth_reached = max(player.max_depth_reached, cur)
+                        cur = -1
+                        f = village
+                        pos = village.start
+                        player.reset_floor_magic()
+                        clear_screen()
+                        draw_box('Village', ["Vous revenez au Hameau du Seuil."], width=72); time.sleep(0.6)
+                        continue
+                    cur = target[1]
                     f = floors[cur]
                     pos = f.down if f.down else f.start
+                    player.last_dungeon_depth = cur
+                    player.max_depth_reached = max(player.max_depth_reached, cur)
                     player.reset_floor_magic()
+                    clear_screen()
                     draw_box('Étage', [f"Vous remontez à l'étage {cur}."], width=44); time.sleep(0.5)
             elif pos == f.down:
-                target = choose_floor_destination(cur, direction=1)
+                target = choose_stair_destination(cur, direction=1)
                 if target is not None:
-                    while target >= len(floors):
+                    if target[0] == 'village':
+                        player.last_dungeon_depth = cur
+                        player.max_depth_reached = max(player.max_depth_reached, cur)
+                        cur = -1
+                        f = village
+                        pos = village.start
+                        player.reset_floor_magic()
+                        clear_screen()
+                        draw_box('Village', ["Vous revenez au Hameau du Seuil."], width=72); time.sleep(0.6)
+                        continue
+                    target_depth = target[1]
+                    while target_depth >= len(floors):
                         floors.append(Floor(len(floors)))
-                    cur = target
+                    cur = target_depth
                     f = floors[cur]
                     pos = f.up if f.up else f.start
+                    player.last_dungeon_depth = cur
+                    player.max_depth_reached = max(player.max_depth_reached, cur)
                     player.reset_floor_magic()
+                    clear_screen()
                     draw_box('Étage', [f"Vous descendez à l'étage {cur}."], width=44); time.sleep(0.5)
             elif pos in f.shops:
                 uses = player.shop_access_count.get(cur, 0)
@@ -4797,18 +5647,13 @@ def game_loop():
                     pause()
             elif pos in f.npcs:
                 npc=f.npcs[pos]; q=npc['quest']
-                clear_screen(); draw_box(f"{npc['name']} (Étage {q.giver_floor})", [
-                    (f"Tuer {q.amount} {q.target}(s)." if q.type=='slay' else
-                     f"Ramène: {q.target}." if q.type=='fetch' else
-                     f"Survis à {q.amount} combats."),
-                    f"Récompense: {q.reward_xp} XP, {q.reward_gold} or."
-                ], width=80)
+                clear_screen(); draw_box(f"{npc['name']} (Étage {q.giver_floor})", quest_lore_lines(q), width=100)
                 existing = next((qq for qq in player.quests_active if qq.qid==q.qid), None)
                 if existing is None and all(qq.qid!=q.qid for qq in player.quests_done):
-                    if input('Accepter ? (o/n) ').strip().lower() in ('o','y'):
-                        player.quests_active.append(q); draw_box('Quête', ['Quête acceptée !'], width=36); pause()
+                    if input('Sceller cette demande ? (o/n) ').strip().lower() in ('o','y'):
+                        player.quests_active.append(q); draw_box('Quête', ['« Les mots sont liés. À présent, les actes doivent suivre. »', 'Quête acceptée !'], width=92); pause()
                 else:
-                    draw_box('Quête', ['Rien à remettre pour le moment.'], width=40); pause()
+                    draw_box('Quête', ['« Le donjon n’a pas encore rendu ce qui fut promis. »', 'Rien à remettre pour le moment.'], width=84); pause()
             elif pos in getattr(f, 'sages', set()):
                 if f.depth in player.sage_depths_visited:
                     draw_box("Sorcier", ["Le Sorcier se détourne.", "« Un seul parchemin par étage. »"], width=72)
@@ -4850,6 +5695,9 @@ def game_loop():
                 if 0 <= nx < MAP_W and 0 <= ny < MAP_H and f.grid[ny][nx] != WALL:
                     pos = (nx, ny)
                     player.last_move = (dx, dy)
+                    if getattr(f, 'is_village', False):
+                        f.tick_npcs(pos)
+                        continue
 
                     # Boss sur la case actuelle ? Prioritaire sur les rencontres normales.
                     if pos in f.elites:
@@ -4858,6 +5706,7 @@ def game_loop():
                             return 'dead'
                         if status == 'win':
                             f.elites.discard(pos)  # boss vaincu
+                            _apply_boss_contract_progress(player, f.depth)
                         if status == 'fled':
                             continue
 
@@ -4955,6 +5804,31 @@ def run_tests():
     assert f.grid[f.start[1]][f.start[0]]==FLOOR, 'Start doit être sur du sol'
     assert f.down is not None, 'Escalier bas manquant'
     assert _bfs_path_exists(f.grid, f.start, f.down), 'Chemin start→down requis'
+    f5 = Floor(5)
+    assert hasattr(f5, 'village_portals') and not f5.village_portals, 'Relais village dédié supprimé'
+    village = VillageFloor()
+    assert village.grid[village.start[1]][village.start[0]] == FLOOR, 'Start village doit être sur du sol'
+    assert village.down is not None and village.grid[village.down[1]][village.down[0]] == FLOOR, 'Puits village requis'
+    pv = Player('VillageTest')
+    assert apply_player_class_choice(pv, 'mage') is True, 'Classe Mage doit être applicable'
+    assert pv.klass == 'Mage' and pv.spellbook_unlocked, 'Choix Mage invalide'
+    assert apply_player_class_choice(pv, 'guerrier') is False, 'Classe ne doit pas être modifiable'
+    assert _village_checkpoint_depths(12) == [0, 5, 10, 12], 'Checkpoints village invalides'
+    assert village.class_trainers and any(n.get('role') == 'icons' for n in village.npcs.values()), 'Village incomplet'
+    assert any(n.get('role') == 'lore' for n in village.npcs.values()), 'PNJ lore village manquant'
+    lore_pos = next(pos for pos, n in village.npcs.items() if n.get('role') == 'lore')
+    for _ in range(25):
+        village.tick_npcs(village.start)
+    assert any(pos == lore_pos and n.get('role') == 'lore' for pos, n in village.npcs.items()), 'PNJ lore ne doit pas bouger'
+    pv.village_casino_unlocked = True
+    refresh_village_features(village, pv)
+    assert village.casinos, 'Casino village doit apparaître après achat'
+    assert any(n.get('role') == 'contract' for n in village.npcs.values()), 'PNJ contrat village manquant'
+    qc = make_village_contract(pv, (1, 1), 'Test')
+    assert any('Objectif:' in line for line in quest_lore_lines(qc)), 'Dialogue lore de quête invalide'
+    pv.quests_active.append(qc)
+    _apply_boss_contract_progress(pv, qc.target)
+    assert not pv.quests_active and pv.quests_done, 'Contrat de palier non complété'
     # Fog visible
     vis=_visible_cells(f, f.start, radius=5)
     assert f.start in vis, 'La case joueur doit être visible'
