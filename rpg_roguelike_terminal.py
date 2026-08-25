@@ -1,8 +1,8 @@
-﻿"""
+"""
 RPG / Roguelike terminal 
 """
 
-import os, sys, time, random, re, ctypes, math
+import os, sys, time, random, re, ctypes, math, copy
 from collections import namedtuple, deque
 
 if os.name == 'nt':
@@ -40,10 +40,18 @@ def _getch_blocking():
             termios.tcsetattr(fd, termios.TCSADRAIN, old)
         return ch
 
+def _action_from_key(ch):
+    """Traduit une touche d'interface en action de la boucle principale."""
+    if ch == '\t':
+        return 'i'
+    if ch in ('e', 'i', 'j', 'c', 'm', 'f', 'x'):
+        return ch
+    return None
+
 def read_command(repeat_last_dir):
     """
     Retourne toujours un 2-tuple :
-      ('move', (n, (dx,dy)))  ou  ('action', 'e'|'i'|'j'|'c'|'m'|'x'|None)
+      ('move', (n, (dx,dy)))  ou  ('action', 'e'|'i'|'j'|'c'|'m'|'f'|'x'|None)
       ou ('quick_spell', index_1_based)
     """
     digits = ''
@@ -87,8 +95,9 @@ def read_command(repeat_last_dir):
             n = int(digits) if digits else 1
             return ('move', (n, DIR_KEYS[ch]))
 
-        if ch in ('e','i','j','c','m','x'):
-            return ('action', ch)
+        action = _action_from_key(ch)
+        if action is not None:
+            return ('action', action)
 
         # (optionnel) support flèches/pavé numérique sous Windows
         if os.name == 'nt' and ch in ('\xe0', '\x00'):
@@ -356,12 +365,13 @@ SAGE_ICON = 'S'
 SUBCLASS_ICON = 'A'
 TUTOR_ICON = '?'
 LORE_ICON = 'L'
-HUD_CONTROLS = '[ZQSD/WASD] déplacer • E interagir • I inventaire • C stats • J journal • M grimoire • X quitter'
-MENU_CONTROLS = "Commandes : ZQSD/WASD se déplacer • E interagir • I inventaire • C stats • J journal • M grimoire • X quitter"
+HUD_CONTROLS = '[ZQSD/WASD] déplacer • E interagir • I/Tab inventaire • C stats • J journal • M grimoire • F favoris • X quitter'
+MENU_CONTROLS = "Commandes : ZQSD/WASD se déplacer • E interagir • I/Tab inventaire • C stats • J journal • M grimoire • F favoris • X quitter"
 QUICK_SPELL_KEYS = {
     '&': 1, 'é': 2, '"': 3, "'": 4, '(': 5, '-': 6,
     'è': 7, '_': 8, 'ç': 9, 'à': 10,
 }
+QUICK_SPELL_LABELS = ('&/1', 'é/2', '"/3', "'/4", '(/5', '-/6', 'è/7', '_/8', 'ç/9', 'à/0')
 
 # ========================== BALANCE ==========================
 BALANCE = {
@@ -474,6 +484,9 @@ BALANCE = {
     'mage_spell_drop_cap': 0.12,
     'mage_special_pouv_coeff': 0.010,
     'mage_special_damage_mult': 0.62,
+
+    # Les sorts qui créent directement de l'or sont volontairement coûteux.
+    'gold_spell_slot_costs': {'gild_touch': 2, 'prospection': 3},
 
     # Nerfs magie / invocation (scaling POUV)
     'spell_damage_base_lvl_coeff': 0.24,
@@ -876,11 +889,15 @@ ALL_ITEMS = _validate_item_pool()
 CONSUMABLE_POOL = [
     Consumable('Potion de soin','heal',24,'Commun','Rend 24 PV.'),
     Consumable('Élixir majeur','heal',65,'Rare','Rend beaucoup de PV.'),
+    Consumable('Fiole de mana pâle', 'restore_spell_slots', 2, 'Commun', 'Restaure jusqu’à 2 emplacements de sort pour cet étage.'),
+    Consumable('Éther de luciole', 'restore_spell_slots', 4, 'Rare', 'Restaure jusqu’à 4 emplacements de sort pour cet étage.'),
     Consumable('Potion de rage','buff_atk',4,'Rare','ATK +4 (3 tours).'),
     Consumable('Pierre de rappel','flee','0', 'Rare', 'Permet de fuir un combat.'),
 ]
 HIGH_TIER_POTIONS = [
     Consumable('Panacée souveraine', 'heal_ultra', 120, 'Épique', 'Rend 120 PV. Très coûteuse.'),
+    Consumable('Rosée lunaire', 'restore_spell_slots', 6, 'Épique', 'Restaure jusqu’à 6 emplacements de sort pour cet étage.'),
+    Consumable('Essence d’étoile captive', 'restore_spell_slots', 9, 'Légendaire', 'Restaure jusqu’à 9 emplacements de sort pour cet étage.'),
     Consumable('Tonique du colosse', 'buff_atk_ultra', 8, 'Légendaire', 'ATK +8 (4 tours). Très rare.'),
     Consumable('Poudre philosophale', 'summon_full_heal', 1, 'Épique', 'Rend tous les PV de votre invocation active.'),
 ]
@@ -927,6 +944,8 @@ def consumable_display_color(cns):
     if not isinstance(cns, Consumable):
         return Ansi.WHITE
     eff = str(getattr(cns, 'effect', ''))
+    if eff == 'restore_spell_slots':
+        return Ansi.BRIGHT_BLUE
     if not eff.startswith('frag_'):
         return Ansi.WHITE
     name = str(getattr(cns, 'name', '')).lower()
@@ -1032,9 +1051,11 @@ class Player(Character):
         self.teleport_spell_cd = 0
         self.spellbook_unlocked = False
         self.spell_scrolls = []
+        self.spell_favorites = []
         self.spells_cast_this_floor = 0
         self.sage_depths_visited = set()
         self.altar_dynamic_effects = []
+        self.recycle_remainders = {'Commun': 0}
         if self.mage_core:
             self.spellbook_unlocked = True
             starter = _pick_spell_ids(0, set(), count=1, source='loot')
@@ -1174,9 +1195,10 @@ class Player(Character):
     def can_cast_spell(self):
         if not self.spellbook_unlocked:
             return False
-        if _spell_casts_left(self) > 0:
-            return True
-        return any(_spell_slot_cost(_spell_by_id(sid)) == 0 for sid in self.spell_scrolls)
+        return any(
+            _spell_by_id(sid) is not None and _spell_can_pay(self, sid)
+            for sid in self.spell_scrolls
+        )
     
     def stats_summary(self):
         sm = _active_summon(self)
@@ -1184,6 +1206,7 @@ class Player(Character):
         if sm:
             summon_txt = f"Invocation:{sm.get('name','?')} {sm.get('hp',0)}/{sm.get('max_hp',0)}"
         class_txt = self.klass if getattr(self, 'class_chosen', True) else 'À choisir'
+        xp_txt = f"{self.xp}/{BALANCE['level_xp_threshold']}"
         parts = [
             f"Classe:{class_txt}",
             f"Niv:{self.level}",
@@ -1193,7 +1216,7 @@ class Player(Character):
             f"{color_label('CRIT')}:{color_val('CRIT', f'{self.crit:.2f}')}",
             f"{color_label('POUV')}:{color_val('POUV', _spell_pouv(self))}",
             f"{color_label('OR')}:{color_val('OR', self.gold)}",
-            f"{color_label('XP')}:{color_val('XP', f'{self.xp}/30')}",
+            f"{color_label('XP')}:{color_val('XP', xp_txt)}",
             f"Clés N/B:{self.normal_keys}/{self.boss_keys}",
             f"Sorts étage:{_spell_casts_left(self)}/{_spell_cast_limit(self)}",
             summon_txt,
@@ -1203,10 +1226,16 @@ class Player(Character):
         
     def gain_xp(self, amount):
         self.xp += amount
-        last_level_up = None
+        levels_gained = 0
+        total_hp_gain = 0
+        total_atk_gain = 0
+        total_def_gain = 0.0
+        total_pouv_gain = 0
+        total_heal = 0
         while self.xp >= BALANCE['level_xp_threshold']:
             self.xp -= BALANCE['level_xp_threshold']
             self.level += 1
+            levels_gained += 1
             if self.klass == 'Mage':
                 hp_gain = 1
                 atk_gain = 1
@@ -1228,14 +1257,38 @@ class Player(Character):
 
             # Soin partiel à chaque montée de niveau
             heal = int(self.max_hp * BALANCE.get('level_heal_ratio', 0.50))
+            hp_before = self.hp
             self.hp = min(self.max_hp, self.hp + heal)
-            last_level_up = (self.level, hp_gain, atk_gain, def_gain, pouv_gain, heal)
+            total_hp_gain += hp_gain
+            total_atk_gain += atk_gain
+            total_def_gain += def_gain
+            total_pouv_gain += pouv_gain
+            total_heal += max(0, self.hp - hp_before)
 
-        if last_level_up is not None:
-            lvl, hp_gain, atk_gain, def_gain, pouv_gain, heal = last_level_up
-            pouv_txt = f" +POUV:{pouv_gain}" if pouv_gain > 0 else ""
-            print(c(f"*** Niveau {lvl}! +HP:{hp_gain} +ATK:{atk_gain} +DEF:{def_gain:.2f}{pouv_txt}(+{heal} PV) ***", Ansi.BRIGHT_YELLOW))
+        if levels_gained > 0:
+            msg = _format_level_up_message(
+                levels_gained,
+                self.level,
+                total_hp_gain,
+                total_atk_gain,
+                total_def_gain,
+                total_pouv_gain,
+                total_heal,
+            )
+            print(c(msg, Ansi.BRIGHT_YELLOW))
             time.sleep(0.6)
+        return levels_gained
+
+def _format_level_up_message(levels_gained, final_level, hp_gain, atk_gain, def_gain, pouv_gain, heal):
+    if int(levels_gained) == 1:
+        intro = f"Niveau {final_level} atteint !"
+    else:
+        intro = f"Vous avez gagné {levels_gained} niveaux ! Niveau {final_level} atteint."
+    pouv_txt = f" +POUV:{pouv_gain}" if pouv_gain > 0 else ""
+    return (
+        f"*** {intro} +HP:{hp_gain} +ATK:{atk_gain} "
+        f"+DEF:{def_gain:.2f}{pouv_txt} (+{heal} PV) ***"
+    )
 
 CONSUMABLE_STACK_MAX = 3
 FRAGMENT_STACK_MAX = 5
@@ -1400,6 +1453,254 @@ def _discard_consumable_at(player, idx, qty=1):
         stacks.pop(idx)
     return dropped
 
+def _parse_indexed_command(cmd, *prefixes):
+    """Extrait un index 0-based après le préfixe reconnu le plus long."""
+    text = str(cmd or '').strip().lower()
+    for prefix in sorted(prefixes, key=len, reverse=True):
+        if text.startswith(prefix) and text[len(prefix):].isdigit():
+            return int(text[len(prefix):]) - 1
+    return None
+
+RECYCLE_COMMONS_PER_FRAGMENT = 3
+RECYCLE_YIELD_BY_ITEM_RARITY = {
+    'Rare': {'Rare': 1},
+    'Épique': {'Épique': 1},
+    'Légendaire': {'Épique': 2},
+    'Étrange': {'Rare': 1, 'Commun': 1},
+}
+
+def _ensure_recycle_remainders(player):
+    rem = getattr(player, 'recycle_remainders', None)
+    if not isinstance(rem, dict):
+        rem = {}
+        player.recycle_remainders = rem
+    rem['Commun'] = max(0, int(rem.get('Commun', 0)))
+    return rem
+
+def _fragment_pool_by_rarity(rarity):
+    return [
+        fr for fr in GEM_FRAGMENT_POOL
+        if isinstance(fr, Consumable) and getattr(fr, 'rarity', None) == rarity
+    ]
+
+def _pick_recycle_fragment(rarity):
+    pool = _fragment_pool_by_rarity(rarity)
+    if pool:
+        return random.choice(pool)
+    fallback_order = {
+        'Légendaire': ['Épique', 'Rare', 'Commun'],
+        'Étrange': ['Rare', 'Commun', 'Épique'],
+    }.get(rarity, ['Commun', 'Rare', 'Épique'])
+    for rar in fallback_order:
+        pool = _fragment_pool_by_rarity(rar)
+        if pool:
+            return random.choice(pool)
+    return None
+
+def _recycle_yield_counts(items, starting_remainders=None):
+    """Calcule les fragments produits et les restes sans toucher au joueur."""
+    counts = {}
+    remainders = {'Commun': 0}
+    if isinstance(starting_remainders, dict):
+        remainders['Commun'] = max(0, int(starting_remainders.get('Commun', 0)))
+
+    for it in items:
+        if not isinstance(it, Item):
+            continue
+        rarity = getattr(it, 'rarity', 'Commun')
+        if rarity == 'Commun':
+            remainders['Commun'] += 1
+            made = remainders['Commun'] // RECYCLE_COMMONS_PER_FRAGMENT
+            remainders['Commun'] %= RECYCLE_COMMONS_PER_FRAGMENT
+            if made:
+                counts['Commun'] = counts.get('Commun', 0) + made
+            continue
+        for frag_rarity, qty in RECYCLE_YIELD_BY_ITEM_RARITY.get(rarity, {'Commun': 1}).items():
+            counts[frag_rarity] = counts.get(frag_rarity, 0) + max(0, int(qty))
+    return counts, remainders
+
+def _parse_recycle_selection(cmd, inventory):
+    text = str(cmd or '').strip().lower().replace(' ', '')
+    if not text:
+        return None, "Sélection vide."
+    if text in ('a', 'all', 'tout', '*'):
+        indices = [i for i, it in enumerate(inventory) if isinstance(it, Item)]
+        if not indices:
+            return None, "Aucun objet recyclable."
+        return indices, None
+
+    selected = []
+    seen = set()
+    for part in text.split(','):
+        if not part:
+            return None, "Sélection invalide."
+        if '-' in part:
+            bounds = part.split('-', 1)
+            if len(bounds) != 2 or not bounds[0].isdigit() or not bounds[1].isdigit():
+                return None, "Plage invalide."
+            start, end = int(bounds[0]), int(bounds[1])
+            if start > end:
+                start, end = end, start
+            values = range(start, end + 1)
+        else:
+            if not part.isdigit():
+                return None, "Sélection invalide."
+            values = (int(part),)
+        for pos in values:
+            idx = pos - 1
+            if not (0 <= idx < len(inventory)):
+                return None, f"Index invalide: {pos}."
+            if not isinstance(inventory[idx], Item):
+                return None, f"{pos} n'est pas un objet recyclable."
+            if idx not in seen:
+                seen.add(idx)
+                selected.append(idx)
+    if not selected:
+        return None, "Aucun objet recyclable."
+    return selected, None
+
+def _recycle_selection_preview(player, indices):
+    items = [player.inventory[i] for i in indices]
+    old_rem = dict(_ensure_recycle_remainders(player))
+    counts, new_rem = _recycle_yield_counts(items, old_rem)
+    fragments = []
+    for rarity in RARITY_ORDER:
+        for _ in range(max(0, int(counts.get(rarity, 0)))):
+            frag = _pick_recycle_fragment(rarity)
+            if frag:
+                fragments.append(frag)
+    return {
+        'indices': list(indices),
+        'items': items,
+        'counts': counts,
+        'fragments': fragments,
+        'old_remainders': old_rem,
+        'new_remainders': new_rem,
+    }
+
+def _can_store_recycle_fragments(player, fragments):
+    probe = type('RecycleBagProbe', (), {})()
+    probe.consumables = copy.deepcopy(_consumable_stacks(player))
+    probe.consumables_limit = int(getattr(player, 'consumables_limit', 0))
+    probe.passive_specials = dict(getattr(player, 'passive_specials', {}) or {})
+    for frag in fragments:
+        if _add_consumable(probe, frag, qty=1) != 1:
+            return False
+    return True
+
+def _apply_recycling(player, preview):
+    indices = sorted(set(preview.get('indices', [])), reverse=True)
+    fragments = list(preview.get('fragments', []))
+    if not _can_store_recycle_fragments(player, fragments):
+        return False, "Sac de consommables plein."
+    if any(not (0 <= idx < len(player.inventory)) for idx in indices):
+        return False, "Inventaire modifié: recyclage annulé."
+    for idx in indices:
+        if not isinstance(player.inventory[idx], Item):
+            return False, "Sélection invalide: recyclage annulé."
+
+    _ensure_recycle_remainders(player).update(preview.get('new_remainders', {}))
+    for idx in indices:
+        player.inventory.pop(idx)
+    for frag in fragments:
+        _add_consumable(player, frag, qty=1)
+    return True, f"{len(indices)} objet(s) recyclé(s)."
+
+def _recycle_counts_text(counts):
+    parts = []
+    for rarity in RARITY_ORDER:
+        qty = int(counts.get(rarity, 0))
+        if qty > 0:
+            parts.append(f"{qty} {rarity}")
+    return ", ".join(parts) if parts else "aucun fragment immédiat"
+
+def _recycle_item_short(it):
+    slot_label = {'weapon': 'Arme', 'armor': 'Armure', 'accessory': 'Accessoire'}.get(it.slot, it.slot)
+    return f"{it.name} [{slot_label}] {rarity_tag(it.rarity)}"
+
+def open_recycling_workshop(player):
+    BOX_W = max(128, MAP_W + 44)
+    while True:
+        items = [(i, it) for i, it in enumerate(player.inventory) if isinstance(it, Item)]
+        rem = _ensure_recycle_remainders(player)
+        rows = [
+            "Transformez vos objets non équipés en fragments de cristaux.",
+            f"Commun: {rem.get('Commun', 0)}/{RECYCLE_COMMONS_PER_FRAGMENT} vers le prochain éclat commun.",
+            f"Sac consommables: {_consumable_slots_used(player)}/{getattr(player, 'consumables_limit', 0)} slots.",
+            "",
+            c("Objets recyclables", Ansi.BRIGHT_MAGENTA),
+        ]
+        if not items:
+            rows.append(c("(Aucun objet dans le sac)", Ansi.BRIGHT_BLACK))
+        else:
+            for idx, it in items:
+                single_counts, single_rem = _recycle_yield_counts([it], rem)
+                yield_txt = _recycle_counts_text(single_counts)
+                if getattr(it, 'rarity', '') == 'Commun':
+                    yield_txt += f" (reste {single_rem.get('Commun', 0)}/{RECYCLE_COMMONS_PER_FRAGMENT})"
+                rows.append(f"{idx + 1:>2}) {_recycle_item_short(it)} -> {yield_txt}")
+        rows += [
+            "",
+            "Commandes:",
+            " 1,3-5 : recycler une sélection",
+            " a : recycler tous les objets du sac",
+            " s<num> : détails",
+            " q : retour",
+        ]
+        clear_screen()
+        draw_box("Atelier de recyclage", rows, width=BOX_W)
+        cmd = input("> ").strip().lower()
+        if cmd in ('q', ''):
+            return
+
+        detail_idx = _parse_indexed_command(cmd, 's')
+        if detail_idx is not None:
+            if 0 <= detail_idx < len(player.inventory) and isinstance(player.inventory[detail_idx], Item):
+                draw_box("Détails", [item_summary(player.inventory[detail_idx])], width=max(140, BOX_W))
+                pause()
+            else:
+                print("Index d'objet invalide."); time.sleep(0.6)
+            continue
+
+        indices, err = _parse_recycle_selection(cmd, player.inventory)
+        if err:
+            print(err); time.sleep(0.8); continue
+        preview = _recycle_selection_preview(player, indices)
+        fragments = preview['fragments']
+        if not fragments and preview['old_remainders'] == preview['new_remainders']:
+            print("Cette sélection ne produit rien."); time.sleep(0.7); continue
+        if not _can_store_recycle_fragments(player, fragments):
+            draw_box("Recyclage bloqué", [
+                "Le sac de consommables n'a pas assez de place pour ces fragments.",
+                "Libérez un slot ou consommez quelques fragments avant de recycler.",
+            ], width=BOX_W)
+            pause()
+            continue
+
+        confirm_rows = [
+            "Objets sacrifiés:",
+            *[f"- {_recycle_item_short(it)}" for it in preview['items']],
+            "",
+            f"Production: {_recycle_counts_text(preview['counts'])}",
+        ]
+        if fragments:
+            confirm_rows.append("Fragments obtenus:")
+            for frag in fragments:
+                confirm_rows.append(f"- {item_summary(frag)}")
+        confirm_rows.append(
+            f"Reste commun: {preview['old_remainders'].get('Commun', 0)}/{RECYCLE_COMMONS_PER_FRAGMENT}"
+            f" -> {preview['new_remainders'].get('Commun', 0)}/{RECYCLE_COMMONS_PER_FRAGMENT}"
+        )
+        confirm_rows += ["", "Confirmer le recyclage ? (o/n)"]
+        clear_screen()
+        draw_box("Confirmation recyclage", confirm_rows, width=max(140, BOX_W))
+        confirm = input("> ").strip().lower()
+        if confirm not in ('o', 'oui', 'y', 'yes'):
+            continue
+        ok, msg = _apply_recycling(player, preview)
+        draw_box("Recyclage", [msg], width=BOX_W)
+        pause()
+
 MONSTER_DEFS = [
     {'id':'slime','name':'Slime','hp':12,'atk':3,'def':1,'crit':0.02,'xp':6,'gold':3,'sprite':SPRITES['slime']},
     {'id':'goblin','name':'Gobelin','hp':18,'atk':6,'def':2,'crit':0.04,'xp':10,'gold':6,'sprite':SPRITES['goblin']},
@@ -1533,6 +1834,49 @@ def _scaled_rarity_weights(depth, base_weights, depth_gain, min_depths):
 def _spell_by_id(sid):
     return SPELLS_BY_ID.get(sid)
 
+def _favorite_spell_ids(player):
+    """Retourne les favoris valides dans l'ordre actuel du grimoire."""
+    scrolls = getattr(player, 'spell_scrolls', []) or []
+    selected = set(getattr(player, 'spell_favorites', []) or [])
+    cleaned = []
+    for sid in scrolls:
+        if sid in selected and _spell_by_id(sid) is not None and sid not in cleaned:
+            cleaned.append(sid)
+    player.spell_favorites = cleaned
+    return cleaned
+
+def _toggle_spell_favorite(player, sid):
+    """Ajoute/retire un sort des favoris. Retourne True s'il devient favori."""
+    favorites = _favorite_spell_ids(player)
+    if sid in favorites:
+        favorites.remove(sid)
+        player.spell_favorites = favorites
+        return False
+    if sid not in getattr(player, 'spell_scrolls', []) or _spell_by_id(sid) is None:
+        return False
+    favorites.append(sid)
+    player.spell_favorites = favorites
+    return True
+
+def _move_spell_scroll(player, source_pos, target_pos):
+    """Déplace un parchemin entre deux positions 1-based du grimoire."""
+    scrolls = getattr(player, 'spell_scrolls', [])
+    try:
+        source_idx = int(source_pos) - 1
+        target_idx = int(target_pos) - 1
+    except (TypeError, ValueError):
+        return False
+    if not (0 <= source_idx < len(scrolls) and 0 <= target_idx < len(scrolls)):
+        return False
+    sid = scrolls.pop(source_idx)
+    scrolls.insert(target_idx, sid)
+    return True
+
+def _quick_spell_label(index):
+    if 0 <= int(index) < len(QUICK_SPELL_LABELS):
+        return QUICK_SPELL_LABELS[int(index)]
+    return None
+
 def _is_summon_spell_sid(sid):
     return sid in ('summon_slime', 'summon_skeleton', 'summon_dragon', 'summon_afterimage')
 
@@ -1574,6 +1918,9 @@ def _spell_slot_cost(spell_or_sid):
         return 1
     if sp.sid in SPELL_CANTRIP_SIDS:
         return 0
+    gold_costs = BALANCE.get('gold_spell_slot_costs', {})
+    if sp.sid in gold_costs:
+        return max(0, int(gold_costs[sp.sid]))
     return {'Rare': 1, 'Épique': 2, 'Légendaire': 3}.get(sp.rarity, 1)
 
 def _spell_can_pay(player, spell_or_sid):
@@ -1888,13 +2235,20 @@ def random_boss_item(depth, player):
 
 def random_consumable(depth=0, source='loot'):
     pool = CONSUMABLE_POOL[:]
-    weights = [24 if c.rarity == 'Commun' else 11 for c in pool]
+    weights = []
+    for cns in pool:
+        if cns.effect == 'restore_spell_slots':
+            weights.append(10 if cns.rarity == 'Commun' else 5)
+        else:
+            weights.append(24 if cns.rarity == 'Commun' else 11)
     if depth >= 10:
         potion_w = 2 if source == 'loot' else 4
         fragment_w = 2 if source == 'loot' else 3
         for hp in HIGH_TIER_POTIONS:
             pool.append(hp)
-            if hp.effect == 'summon_full_heal':
+            if hp.effect == 'restore_spell_slots':
+                weights.append(1 if source == 'loot' else 2)
+            elif hp.effect == 'summon_full_heal':
                 weights.append(2 if source == 'loot' else 4)
             else:
                 weights.append(potion_w)
@@ -1923,6 +2277,15 @@ def _active_summon(player):
     if sm.get('id') == 'horde':
         _refresh_horde_stats(player, sm)
     return sm
+
+def _dismiss_active_summon(player):
+    """Renvoie l'invocation sans modifier ses cooldowns ni rembourser son coût."""
+    sm = _active_summon(player)
+    if not sm:
+        return None
+    name = sm.get('name', 'Invocation')
+    player.summon = None
+    return name
 
 def _afterimage_sprite(player):
     base = player.sprite if getattr(player, 'sprite', None) else SPRITES.get('knight', [])
@@ -2117,6 +2480,16 @@ def _apply_consumable_effect(player, cns, in_combat=False):
         amount = int(cns.power)
         player.heal(amount)
         return 'used', c(f"+{amount} PV", Ansi.GREEN)
+    if cns.effect == 'restore_spell_slots':
+        amount = max(1, int(cns.power))
+        spent = max(0, int(getattr(player, 'spells_cast_this_floor', 0)))
+        if spent <= 0:
+            return 'blocked', "Votre réserve de sorts est déjà pleine pour cet étage."
+        restored = min(amount, spent)
+        player.spells_cast_this_floor = max(0, spent - restored)
+        left = _spell_casts_left(player)
+        cap = _spell_cast_limit(player)
+        return 'used', c(f"{cns.name}: +{restored} emplacement(s) de sort ({left}/{cap} disponibles).", Ansi.BRIGHT_BLUE)
     if cns.effect == 'buff_atk':
         player.temp_buffs['atk'] += int(cns.power)
         player.temp_buffs['turns'] = max(player.temp_buffs['turns'], 3)
@@ -2214,6 +2587,9 @@ def price_of(it):
         }
         if it.effect in premium:
             return premium[it.effect]
+        if it.effect == 'restore_spell_slots':
+            mana_prices = {'Commun': 30, 'Rare': 90, 'Épique': 210, 'Légendaire': 340}
+            return mana_prices.get(it.rarity, 70)
         return {
             'Commun': 12,
             'Rare': 32,
@@ -2244,6 +2620,21 @@ def price_of(it):
     if is_magic_item(it) and it.rarity in ('Rare', '\u00c9pique', 'L\u00e9gendaire'):
         price = max(price + 35.0, price * 1.35)
     return int(max(min_price.get(it.rarity, 8), round(price)))
+
+def _sell_value(it):
+    return max(5, price_of(it) // 2)
+
+def _sell_consumable_at(player, idx, qty=1):
+    """Vend une quantité d'une pile et retourne (consommable, quantité, gain)."""
+    stacks = _consumable_stacks(player)
+    if not (0 <= idx < len(stacks)):
+        return None, 0, 0
+    cns = stacks[idx]['item']
+    wanted = int(stacks[idx].get('qty', 0)) if qty is None else max(1, int(qty))
+    sold = _discard_consumable_at(player, idx, qty=wanted)
+    gain = sold * _sell_value(cns)
+    player.gold += gain
+    return cns, sold, gain
 
 def choose_floor_destination(current_depth, direction):
     """
@@ -2781,29 +3172,45 @@ def effect_str(special):
     for k,v in special.items(): parts.append(f"{k}={v}" if not isinstance(v,bool) else k)
     return ' | Effets: ' + ', '.join(parts)
 
+def item_stats_text(it, show_zero=False):
+    if not isinstance(it, Item):
+        return ''
+    stats = [
+        ('HP', it.hp_bonus, None),
+        ('ATK', it.atk_bonus, None),
+        ('DEF', it.def_bonus, None),
+        ('CRIT', it.crit_bonus, "{:+.2f}"),
+        ('POUV', item_pouv(it), None),
+    ]
+    parts = []
+    for label, value, fmt in stats:
+        if not show_zero and abs(float(value)) <= 1e-9:
+            continue
+        if fmt:
+            value_txt = fmt.format(float(value))
+        else:
+            value_txt = f"{_fmt_num(value)}"
+            if float(value) >= 0:
+                value_txt = "+" + value_txt
+        parts.append(f"{color_label(label)}{value_txt}")
+    return " ".join(parts) if parts else c("Aucun bonus de stats", Ansi.BRIGHT_BLACK)
+
 def item_summary(it):
     if it is None: return '—'
     if isinstance(it, Consumable):
-        return f"{it.name} {rarity_tag(it.rarity)} — {it.description}"
+        return f"{c(it.name, consumable_display_color(it))} {rarity_tag(it.rarity)} — {it.description}"
     is_magic = is_magic_item(it)
     slot_label = {'weapon': 'Arme', 'armor': 'Armure', 'accessory': 'Accessoire'}.get(it.slot, it.slot)
     tint = (lambda txt: _magic_tinted(txt, it)) if is_magic else (lambda txt: c(txt, rarity_color(it.rarity)))
     magic_tag = tint(" [Magique]") if is_magic else ""
     rarity_lbl = rarity_tag(it.rarity)
-    # stats colorées
-    s_hp   = f"{color_label('HP')}+{color_val('HP', it.hp_bonus)}"
-    s_atk  = f"{color_label('ATK')}+{color_val('ATK', it.atk_bonus)}"
-    s_def  = f"{color_label('DEF')}+{color_val('DEF', it.def_bonus)}"
-    s_crit = f"{color_label('CRIT')}+{color_val('CRIT', f'{it.crit_bonus:.2f}')}"
-    s_pouv = ""
-    if item_pouv(it):
-        s_pouv = f" {color_label('POUV')}+{color_val('POUV', item_pouv(it))}"
+    stats_txt = item_stats_text(it, show_zero=False)
     details = tint(f" — {it.description} | ")
     effects = effect_str(it.special)
     effects = tint(effects) if effects else ''
     return (
         f"{tint(f'{it.name} [{slot_label}] ')}{rarity_lbl}{magic_tag}"
-        f"{details}{s_hp} {s_atk} {s_def} {s_crit}{s_pouv}{effects}"
+        f"{details}{stats_txt}{effects}"
     )
 
 def item_brief_stats(it):
@@ -2816,22 +3223,7 @@ def item_brief_stats(it):
     slot_label = {'weapon': 'Arme', 'armor': 'Armure', 'accessory': 'Accessoire'}.get(it.slot, it.slot)
     tint = (lambda txt: _magic_tinted(txt, it)) if is_magic else (lambda txt: c(txt, rarity_color(it.rarity)))
     magic_tag = tint(" [Magique]") if is_magic else ""
-    stats_parts = []
-    if it.hp_bonus:
-        stats_parts.append(f"{color_label('HP')}{it.hp_bonus:+}")
-    if it.atk_bonus:
-        stats_parts.append(f"{color_label('ATK')}{it.atk_bonus:+}")
-    if it.def_bonus:
-        stats_parts.append(f"{color_label('DEF')}{it.def_bonus:+}")
-    if abs(float(it.crit_bonus)) > 1e-9:
-        stats_parts.append(f"{color_label('CRIT')}{it.crit_bonus:+.2f}")
-    pouv_bonus = item_pouv(it)
-    if pouv_bonus:
-        stats_parts.append(f"{color_label('POUV')}{pouv_bonus:+}")
-    if stats_parts:
-        stats_txt = " ".join(stats_parts)
-    else:
-        stats_txt = c("Aucun bonus de stats", Ansi.BRIGHT_BLACK)
+    stats_txt = item_stats_text(it, show_zero=False)
     eff_txt = effect_str(it.special)
     if eff_txt:
         eff_txt = tint(eff_txt)
@@ -2849,6 +3241,87 @@ def item_compact_header(it):
     slot_label = {'weapon': 'Arme', 'armor': 'Armure', 'accessory': 'Accessoire'}.get(it.slot, it.slot)
     magic_tag = _magic_tinted(" [Magique]", it) if is_magic_item(it) else ""
     return f"{_magic_tinted(f'{it.name} [{slot_label}] ', it)}{rarity_tag(it.rarity)}{magic_tag}"
+
+def _fragment_consumable_effect_text(cns):
+    if not isinstance(cns, Consumable):
+        return ""
+    eff = str(getattr(cns, 'effect', ''))
+    power = getattr(cns, 'power', 0)
+    if isinstance(power, (tuple, list)) and len(power) >= 2:
+        amount, fights = float(power[0]), int(power[1])
+    else:
+        amount, fights = float(power) if isinstance(power, (int, float)) else 0.0, 1
+    if eff == 'frag_atk_pct':
+        return f"+{int(round(amount * 100))}% ATK pendant {fights} combat(s)"
+    if eff == 'frag_def_pct':
+        return f"-{int(round(amount * 100))}% dégâts subis pendant {fights} combat(s)"
+    if eff == 'frag_spell_pct':
+        return f"+{int(round(amount * 100))}% dégâts de sorts pendant {fights} combat(s)"
+    if eff == 'frag_crit_flat':
+        return f"+{amount:.2f} CRIT pendant {fights} combat(s)"
+    return getattr(cns, 'description', '')
+
+def _fragment_stats_rows(player):
+    rows = [c("Fragments (sac, actifs, permanents)", Ansi.BRIGHT_MAGENTA)]
+    stacks = [
+        st for st in _consumable_stacks(player)
+        if isinstance(st.get('item'), Consumable) and str(getattr(st.get('item'), 'effect', '')).startswith('frag_')
+    ]
+    total_fragments = sum(int(st.get('qty', 0)) for st in stacks)
+    rows.append(f"Stacks en sac: {len(stacks)}  |  Fragments: {total_fragments}")
+    if stacks:
+        for st in stacks:
+            cns = st['item']
+            rows.append(f"- {c(cns.name, consumable_display_color(cns))} x{st['qty']}: {_fragment_consumable_effect_text(cns)}")
+    else:
+        rows.append(c("(Aucun fragment dans le sac)", Ansi.BRIGHT_BLACK))
+
+    rem = getattr(player, 'recycle_remainders', {}) if isinstance(getattr(player, 'recycle_remainders', {}), dict) else {}
+    common_rem = int(rem.get('Commun', 0))
+    if common_rem > 0:
+        rows.append(f"Recyclage commun en cours: {common_rem}/{RECYCLE_COMMONS_PER_FRAGMENT}")
+
+    rows.append("")
+    rows.append(c("Bonus actifs des prochains combats", Ansi.BRIGHT_CYAN))
+    frag = _active_next_combat_buffs(player)
+    if int(frag.get('fights_left', 0)) > 0:
+        rows.append(f"Durée restante: {int(frag.get('fights_left', 0))} combat(s)")
+        atk_pct = float(frag.get('atk_pct', 0.0))
+        def_pct = float(frag.get('def_pct', 0.0))
+        spell_pct = float(frag.get('spell_pct', 0.0))
+        crit_flat = float(frag.get('crit_flat', 0.0))
+        rows.append(f"ATK: +{int(round(atk_pct * 100))}%  |  DEF: -{int(round(def_pct * 100))}% dégâts subis")
+        rows.append(f"Sorts: +{int(round(spell_pct * 100))}%  |  CRIT: +{crit_flat:.2f}")
+    else:
+        rows.append(c("(Aucun bonus de fragment en attente)", Ansi.BRIGHT_BLACK))
+
+    specs = player.all_specials()
+    perm_rows = []
+    perm_map = [
+        ('perm_frag_atk_pct', 'ATK', '%'),
+        ('perm_frag_def_pct', 'DEF', '% dégâts subis en moins'),
+        ('perm_frag_spell_pct', 'Sorts', '% dégâts de sorts'),
+        ('perm_frag_crit_flat', 'CRIT', 'flat'),
+        ('frag_duration_bonus', 'Durée des fragments', 'combat(s)'),
+    ]
+    for key, label, suffix in perm_map:
+        val = float(specs.get(key, 0.0))
+        if abs(val) <= 1e-9:
+            continue
+        if suffix == '%':
+            perm_rows.append(f"- {label}: +{int(round(val * 100))}% permanent")
+        elif suffix == '% dégâts subis en moins':
+            perm_rows.append(f"- {label}: -{int(round(val * 100))}% dégâts subis permanent")
+        elif suffix == '% dégâts de sorts':
+            perm_rows.append(f"- {label}: +{int(round(val * 100))}% permanent")
+        elif suffix == 'flat':
+            perm_rows.append(f"- {label}: +{val:.2f} permanent")
+        else:
+            perm_rows.append(f"- {label}: +{int(round(val))} {suffix}")
+    rows.append("")
+    rows.append(c("Effets permanents liés aux fragments", Ansi.BRIGHT_GREEN))
+    rows.extend(perm_rows if perm_rows else [c("(Aucun effet permanent de fragment)", Ansi.BRIGHT_BLACK)])
+    return rows
 
 def open_stats_interface(player):
     eq_items = [it for it in player.equipment.values() if it]
@@ -2880,20 +3353,6 @@ def open_stats_interface(player):
         f"POUV (sources): {_fmt_num(pouv_total)} = specs({_fmt_num(pouv_specs)}) + classe({_fmt_num(pouv_class)})",
         f"  ↳ specs({_fmt_num(pouv_specs)}) = passifs/sol({_fmt_num(pouv_passive)}) + équipement({_fmt_num(pouv_equip)})",
     ]
-
-    equip_rows = [c("Sources équipement", Ansi.BRIGHT_MAGENTA)]
-    if not eq_items:
-        equip_rows.append(c("(Aucun objet équipé)", Ansi.BRIGHT_BLACK))
-    else:
-        for slot, it in player.equipment.items():
-            if not it:
-                continue
-            slot_name = {"weapon":"Arme","armor":"Armure","accessory":"Accessoire"}.get(slot, slot)
-            bonus = f"HP+{_fmt_num(it.hp_bonus)} ATK+{_fmt_num(it.atk_bonus)} DEF+{_fmt_num(it.def_bonus)} CRIT+{_fmt_num(it.crit_bonus)} POUV+{_fmt_num(item_pouv(it))}"
-            line = f"- {slot_name}: {_magic_tinted(it.name + ' ', it)}{rarity_tag(it.rarity)} | {bonus}"
-            equip_rows.append(line)
-            if it.special:
-                equip_rows.append(f"  Effets: {effect_str(it.special).replace(' | Effets: ','')}")
 
     altar_rows = [c("Historique des autels", Ansi.BRIGHT_YELLOW)]
     altar_rows.append(f"Bénédictions: {player.blessings_count}  |  Malédictions: {player.curses_count}")
@@ -2940,18 +3399,7 @@ def open_stats_interface(player):
         else:
             magic_rows.append("Sorts d'exploration actifs: aucun")
 
-    frag_rows = [c("Fragments (prochains combats)", Ansi.BRIGHT_MAGENTA)]
-    frag = _active_next_combat_buffs(player)
-    if int(frag.get('fights_left', 0)) > 0:
-        frag_rows.append(f"Durée restante: {int(frag.get('fights_left', 0))} combat(s)")
-        atk_pct = float(frag.get('atk_pct', 0.0))
-        def_pct = float(frag.get('def_pct', 0.0))
-        spell_pct = float(frag.get('spell_pct', 0.0))
-        crit_flat = float(frag.get('crit_flat', 0.0))
-        frag_rows.append(f"ATK: +{int(round(atk_pct * 100))}%  |  DEF: +{int(round(def_pct * 100))}%")
-        frag_rows.append(f"Sorts: +{int(round(spell_pct * 100))}%  |  CRIT: +{crit_flat:.2f}")
-    else:
-        frag_rows.append(c("(Aucun bonus de fragment en attente)", Ansi.BRIGHT_BLACK))
+    frag_rows = _fragment_stats_rows(player)
 
     spec_rows = [c("Effets passifs cumulés", Ansi.BRIGHT_GREEN)]
     specs = player.all_specials()
@@ -2963,8 +3411,6 @@ def open_stats_interface(player):
 
     clear_screen()
     draw_box("Stats — Vue détaillée", core_rows, width=max(150, MAP_W + 50))
-    print()
-    draw_box("Stats — Équipement", equip_rows, width=max(150, MAP_W + 50))
     print()
     draw_box("Stats — Autels, Magie & Effets", altar_rows + [""] + magic_rows + [""] + frag_rows + [""] + spec_rows, width=max(150, MAP_W + 50))
     pause()
@@ -2990,7 +3436,7 @@ def open_inventory(player):
     - Fiche héros (stats colorées)
     - Équipement (3 slots)
     - Sac Objets (équipables/vendables) — actions : e<num>, d<num>, s<num>
-    - Sac Consommables (non vendables) — actions : uc<num>, dc<num>
+    - Sac Consommables — actions : uc<num>, ucm<num>, dc<num>, dcm<num>
     """
     BOX_W = max(138, MAP_W + 42)
 
@@ -3037,9 +3483,9 @@ def open_inventory(player):
         bag_rows.append(" - s<num> : détails de l’objet")
         bag_rows.append(" - q : quitter l’inventaire")
 
-        # === PANNEAU 3 : Sac Consommables (non vendables) ===
+        # === PANNEAU 3 : Sac Consommables ===
         conso_rows = []
-        conso_rows.append(c('Sac — Consommables (non vendables)', Ansi.BRIGHT_CYAN))
+        conso_rows.append(c('Sac — Consommables', Ansi.BRIGHT_CYAN))
         cons = _consumable_stacks(player)
         if not cons:
             conso_rows.append(c('(Vide)', Ansi.BRIGHT_BLACK))
@@ -3047,8 +3493,6 @@ def open_inventory(player):
             for i, st in enumerate(cons, 1):
                 cns = st['item']
                 label = item_summary(cns)
-                if str(getattr(cns, 'effect', '')).startswith('frag_'):
-                    label = c(label, consumable_display_color(cns))
                 conso_rows.append(f"{i:>2}) {label}  x{st['qty']}")
 
         conso_rows.append('')
@@ -3056,6 +3500,7 @@ def open_inventory(player):
         conso_rows.append(" - uc<num> : utiliser le consommable")
         conso_rows.append(" - ucm<num> / ucmax<num> : utiliser toute la pile du consommable")
         conso_rows.append(" - dc<num> : jeter 1 unité du consommable")
+        conso_rows.append(" - dcm<num> / dcmax<num> : jeter toute la pile du consommable")
 
         # === Rendu ===
         clear_screen()
@@ -3066,8 +3511,9 @@ def open_inventory(player):
         draw_box('Inventaire — Sac Consommables', conso_rows, width=BOX_W)
 
         # === Saisie ===
-        cmd = input('> ').strip().lower()
-        if cmd == 'q':
+        raw_cmd = input('> ')
+        cmd = raw_cmd.strip().lower()
+        if raw_cmd == '\t' or cmd in ('q', 'i', 'tab'):
             break
 
         # OBJETS : équiper / jeter / détails (e<num>, d<num>, s<num>)
@@ -3102,9 +3548,10 @@ def open_inventory(player):
                 print("Index d’objet invalide."); time.sleep(0.6)
             continue
 
-        # CONSOMMABLES : utiliser tout / utiliser 1 / jeter 1 (ucm<num>, uc<num>, dc<num>)
-        if (cmd.startswith('ucm') and cmd[3:].isdigit()) or (cmd.startswith('ucmax') and cmd[5:].isdigit()):
-            idx = int(cmd[3:]) - 1 if cmd.startswith('ucm') else int(cmd[5:]) - 1
+        # CONSOMMABLES : utiliser toute la pile (ucm<num>/ucmax<num>)
+        stack_use_idx = _parse_indexed_command(cmd, 'ucmax', 'ucm')
+        if stack_use_idx is not None:
+            idx = stack_use_idx
             cons = _consumable_stacks(player)
             if 0 <= idx < len(cons):
                 cns = cons[idx]['item']
@@ -3130,6 +3577,21 @@ def open_inventory(player):
                 print("Index de consommable invalide."); time.sleep(0.6)
             continue
 
+        # Jeter toute une pile (dcm<num>/dcmax<num>).
+        stack_drop_idx = _parse_indexed_command(cmd, 'dcmax', 'dcm')
+        if stack_drop_idx is not None:
+            idx = stack_drop_idx
+            cons = _consumable_stacks(player)
+            if 0 <= idx < len(cons):
+                cns = cons[idx]['item']
+                qty = int(cons[idx].get('qty', 0))
+                dropped = _discard_consumable_at(player, idx, qty=qty)
+                print(f"Pile jetée : {cns.name} x{dropped}."); time.sleep(0.6)
+            else:
+                print("Index de consommable invalide."); time.sleep(0.6)
+            continue
+
+        # Utiliser ou jeter une unité (uc<num>/dc<num>).
         if (cmd.startswith('uc') or cmd.startswith('dc')) and cmd[2:].isdigit():
             idx = int(cmd[2:]) - 1
             cons = _consumable_stacks(player)
@@ -3271,6 +3733,19 @@ def _display_spell(sp, player):
     cost = _spell_slot_cost(sp)
     return f"{sp.name} [{sp.rarity}] ({sp.kind}, coût {cost}) — {_spell_effect_details(sp, player)}"
 
+def _spell_usable_in_context(sid, context):
+    sp = _spell_by_id(sid)
+    if not sp:
+        return False
+    if context == 'combat':
+        return sp.kind == 'combat'
+    if context == 'explore':
+        return sp.kind == 'explore' or sid in {
+            'mending', 'greater_mending',
+            'summon_slime', 'summon_skeleton', 'summon_dragon', 'summon_afterimage',
+        }
+    return False
+
 def _cast_explore_spell(player, sid, floor=None, player_pos=None):
     sp = _spell_by_id(sid)
     if not sp:
@@ -3376,6 +3851,59 @@ def _cast_explore_spell(player, sid, floor=None, player_pos=None):
     print("Ce parchemin ne se lance pas hors combat."); time.sleep(0.7)
     return player_pos, False
 
+def open_spell_favorites(player, depth, floor=None, player_pos=None):
+    """Menu rapide, filtré sur les sorts marqués favoris."""
+    if not player.spellbook_unlocked:
+        draw_box("Favoris", ["Vous ne possédez pas encore de grimoire."], width=72)
+        pause()
+        return player_pos
+
+    while True:
+        favorites = _favorite_spell_ids(player)
+        sm = _active_summon(player)
+        rows = [
+            f"Étage {depth}  |  Lancers restants: {_spell_casts_left(player)}/{_spell_cast_limit(player)}",
+            (f"Invocation active: {sm.get('name', '?')} ({sm.get('hp', 0)}/{sm.get('max_hp', 0)} PV)" if sm else "Invocation active: Aucune"),
+            "",
+            c("Sorts favoris", Ansi.BRIGHT_CYAN),
+        ]
+        if not favorites:
+            rows += [c("(Aucun favori)", Ansi.BRIGHT_BLACK), "Ajoutez-en depuis le grimoire avec f<num>."]
+        else:
+            for i, sid in enumerate(favorites, 1):
+                sp = _spell_by_id(sid)
+                usable = "utilisable ici" if _spell_usable_in_context(sid, 'explore') else "combat uniquement"
+                rows.append(f"{i:>2}) {_display_spell(sp, player)}  [{usable}]")
+        rows += ["", "Commandes:", " <num> : lancer le favori", " q : retour"]
+        if sm:
+            rows.insert(-1, " r : renvoyer l'invocation active")
+
+        clear_screen()
+        draw_box("Favoris — accès rapide", rows, width=max(120, MAP_W + 42))
+        cmd = input("> ").strip().lower()
+        if cmd in ('q', ''):
+            return player_pos
+        if cmd == 'r':
+            name = _dismiss_active_summon(player)
+            if name:
+                print(f"{name} a été renvoyé. Aucun coût n'est remboursé; les recharges en cours restent inchangées.")
+            else:
+                print("Aucune invocation active.")
+            time.sleep(0.7)
+            return player_pos
+        if cmd.isdigit():
+            idx = int(cmd) - 1
+            if 0 <= idx < len(favorites):
+                sid = favorites[idx]
+                if not _spell_usable_in_context(sid, 'explore'):
+                    print("Ce favori est utilisable uniquement en combat."); time.sleep(0.7)
+                    continue
+                player_pos, casted = _cast_explore_spell(player, sid, floor, player_pos)
+                if casted:
+                    return player_pos
+                continue
+        print("Choix invalide."); time.sleep(0.6)
+
 def open_spellbook(player, depth, floor=None, player_pos=None):
     if not player.spellbook_unlocked:
         draw_box("Grimoire", ["Vous ne possédez pas encore de grimoire.", "Trouvez le Sorcier pour l'obtenir."], width=82)
@@ -3384,6 +3912,7 @@ def open_spellbook(player, depth, floor=None, player_pos=None):
     while True:
         cast_cap = _spell_cast_limit(player)
         sm = _active_summon(player)
+        favorite_ids = set(_favorite_spell_ids(player))
         summon_cds = getattr(player, 'summon_spell_cds', {}) or {}
         summon_cd_txt = ", ".join(f"{sid}:{int(v)}" for sid, v in sorted(summon_cds.items()) if int(v) > 0)
         rows = [
@@ -3412,20 +3941,35 @@ def open_spellbook(player, depth, floor=None, player_pos=None):
             for i, sid in enumerate(player.spell_scrolls, 1):
                 sp = _spell_by_id(sid)
                 if sp:
-                    rows.append(f"{i:>2}) {_display_spell(sp, player)}")
+                    quick = _quick_spell_label(i - 1)
+                    quick_tag = f"[{quick}]" if quick else "[---]"
+                    favorite_tag = "[FAV]" if sid in favorite_ids else "[   ]"
+                    rows.append(f"{i:>2}) {quick_tag:<7} {favorite_tag} {_display_spell(sp, player)}")
         rows += ["", c(f"Parchemins en poche: {len(player.spell_scrolls)}", Ansi.BRIGHT_MAGENTA)]
         rows += [
             "",
             "Commandes:",
-            " Lancement rapide en jeu : & é \" ' ( - (puis è _ ç à)",
+            " <num> : lancer un sort hors combat",
+            " r<num> <position> : déplacer le sort et réassigner les raccourcis",
+            " f<num> : ajouter/retirer le sort des favoris",
             " d<num> : jeter un parchemin",
-            " q) Retour",
+            " q : retour",
         ]
+        if sm:
+            rows.insert(-1, " ri : renvoyer l'invocation active (recharge inchangée)")
         clear_screen()
         draw_box("Grimoire", rows, width=max(120, MAP_W + 42))
         cmd = input("> ").strip().lower()
         if cmd in ("q", ""):
             return player_pos
+        if cmd == 'ri':
+            name = _dismiss_active_summon(player)
+            if name:
+                print(f"{name} a été renvoyé. Aucun coût n'est remboursé; les recharges en cours restent inchangées.")
+            else:
+                print("Aucune invocation active.")
+            time.sleep(0.7)
+            continue
         if cmd.isdigit():
             idx = int(cmd) - 1
             if not (0 <= idx < len(player.spell_scrolls)):
@@ -3435,6 +3979,28 @@ def open_spellbook(player, depth, floor=None, player_pos=None):
             if casted and sid == 'teleport':
                 return player_pos
             continue
+
+        move_match = re.fullmatch(r"r(\d+)\s*(?:>|:|\s)\s*(\d+)", cmd)
+        if move_match:
+            source_pos, target_pos = (int(x) for x in move_match.groups())
+            if _move_spell_scroll(player, source_pos, target_pos):
+                print(f"Sort déplacé de la position {source_pos} à la position {target_pos}.")
+            else:
+                print("Position invalide.")
+            time.sleep(0.6)
+            continue
+
+        if len(cmd) > 1 and cmd[1:].isdigit() and cmd[0] == 'f':
+            idx = int(cmd[1:]) - 1
+            if not (0 <= idx < len(player.spell_scrolls)):
+                print("Index invalide."); time.sleep(0.6); continue
+            sid = player.spell_scrolls[idx]
+            is_favorite = _toggle_spell_favorite(player, sid)
+            sp = _spell_by_id(sid)
+            state = "ajouté aux" if is_favorite else "retiré des"
+            print(f"{sp.name if sp else 'Sort'} {state} favoris."); time.sleep(0.6)
+            continue
+
         if len(cmd) > 1 and cmd[1:].isdigit() and cmd[0] in ("e", "d"):
             idx = int(cmd[1:]) - 1
             if not (0 <= idx < len(player.spell_scrolls)):
@@ -3443,10 +4009,13 @@ def open_spellbook(player, depth, floor=None, player_pos=None):
             sp = _spell_by_id(sid)
             if cmd[0] == "d":
                 player.spell_scrolls.pop(idx)
+                _favorite_spell_ids(player)
                 print("Parchemin détruit."); time.sleep(0.6); continue
             player_pos, casted = _cast_explore_spell(player, sid, floor, player_pos)
             if casted and sid == 'teleport':
                 return player_pos
+            continue
+        print("Commande inconnue."); time.sleep(0.6)
 
 def open_sage_spell_offer(player, depth):
     def _draw_sage_dialog(title, rows, width=96, side_by_side=False):
@@ -3524,6 +4093,17 @@ def _combat_panel(player, monster, mname, sprite_m, depth, summon=None):
     lines.append(
         f"1) Attaquer  2) Spéciale  {spell_label}  4) Consommable  {c('Q) Fuir', Ansi.BRIGHT_RED)}"
     )
+    secondary_actions = []
+    if player.spellbook_unlocked:
+        combat_favorites = sum(
+            1 for sid in _favorite_spell_ids(player)
+            if _spell_usable_in_context(sid, 'combat')
+        )
+        secondary_actions.append(c(f"F) Favoris combat ({combat_favorites})", Ansi.BRIGHT_BLUE))
+    if summon:
+        secondary_actions.append(c("R) Renvoyer l'invocation", Ansi.BRIGHT_CYAN))
+    if secondary_actions:
+        lines.append("  ".join(secondary_actions))
     frag = _active_next_combat_buffs(player)
     if frag.get('fights_left', 0) > 0:
         frag_parts = []
@@ -3563,29 +4143,35 @@ def _use_combat_consumable(player):
     print(msg); time.sleep(0.6)
     return False
 
-def _cast_combat_spell(player, monster, depth, p_specs, combat_state):
+def _cast_combat_spell(player, monster, depth, p_specs, combat_state, favorites_only=False):
     if not player.spellbook_unlocked:
         print("Vous n'avez pas de grimoire."); time.sleep(0.6); return False, None, None
     choices = []
-    for i, sid in enumerate(player.spell_scrolls):
+    source_ids = _favorite_spell_ids(player) if favorites_only else player.spell_scrolls
+    for sid in source_ids:
         sp_i = _spell_by_id(sid)
         if not sp_i or sp_i.kind != 'combat':
             continue
         if _spell_can_pay(player, sp_i):
-            choices.append((i, sid))
+            choices.append(sid)
     if not choices:
-        print("Aucun sort de combat lançable (emplacements insuffisants)."); time.sleep(0.7); return False, None, None
+        if favorites_only:
+            print("Aucun sort favori de combat lançable.")
+        else:
+            print("Aucun sort de combat lançable (emplacements insuffisants).")
+        time.sleep(0.7); return False, None, None
 
-    rows = [f"{i+1}) {_display_spell(_spell_by_id(sid), player)}" for i, (_, sid) in enumerate(choices)]
+    rows = [f"{i+1}) {_display_spell(_spell_by_id(sid), player)}" for i, sid in enumerate(choices)]
     rows += ["q) Annuler"]
-    draw_box("Lancer un sort", rows, width=max(96, MAP_W + 26))
+    title = "Lancer un sort favori" if favorites_only else "Lancer un sort"
+    draw_box(title, rows, width=max(96, MAP_W + 26))
     cmd = input("> ").strip().lower()
     if cmd in ("q", ""):
         return False, None, None
     if not cmd.isdigit() or not (1 <= int(cmd) <= len(choices)):
         print("Choix invalide."); time.sleep(0.6); return False, None, None
 
-    _inv_idx, sid = choices[int(cmd)-1]
+    sid = choices[int(cmd)-1]
     sp = _spell_by_id(sid)
     cost = _spell_slot_cost(sp)
     if not _spell_can_pay(player, sp):
@@ -3893,6 +4479,23 @@ def fight(player, depth, boss=False):
                 continue
             if spell_action == 'damage':
                 _summon_strike()
+        elif cmd=='f':
+            casted, _spell_flash, spell_action = _cast_combat_spell(
+                player, monster, depth, p_specs, combat_state, favorites_only=True
+            )
+            if not casted:
+                continue
+            if spell_action == 'damage':
+                _summon_strike()
+        elif cmd=='r':
+            name = _dismiss_active_summon(player)
+            if not name:
+                print("Aucune invocation active."); time.sleep(0.6)
+            else:
+                print(f"{name} a été renvoyé. Aucun coût n'est remboursé; les recharges en cours restent inchangées.")
+                time.sleep(0.6)
+            turn_idx = max(0, turn_idx - 1)
+            continue
         elif cmd=='4':
             if used_conso:
                 print("Vous avez déjà utilisé un consommable ce tour."); time.sleep(0.6)
@@ -4500,7 +5103,7 @@ def interaction_hint(floor, player_pos):
         if pos in getattr(floor, 'shops', set()):
             return "Comptoir du village — appuyez sur E."
         if pos in getattr(floor, 'class_trainers', set()):
-            return "Maître d'armes — appuyez sur E pour choisir votre classe."
+            return "Maître d'armes — appuyez sur E."
         if pos in getattr(floor, 'tutorials', set()):
             return "Guide du village — appuyez sur E."
         if pos in getattr(floor, 'icon_guides', set()):
@@ -4762,7 +5365,7 @@ def open_treasure_choice(player, depth, chest_type='normal'):
             rows = []
             for i, it in enumerate(choices):
                 if isinstance(it, Item):
-                    line = f"{i+1}) {item_compact_header(it)} | {preview_delta(player,it)}"
+                    line = f"{i+1}) {chest_item_label(it)} | {preview_delta(player,it)}"
                     rows.append(line)
                 else:
                     rows.append(f"{i+1}) {chest_item_label(it)}")
@@ -4880,7 +5483,7 @@ def open_shop(player, depth, price_mult=1.0, shop_label='Marchand'):
             for i, it in enumerate(stock, 1):
                 price = int(round(price_of(it) * price_mult))
                 if not isinstance(it, Consumable):
-                    label = f"{item_compact_header(it)} | {preview_delta(player, it)}"
+                    label = f"{item_brief_stats(it)} | {preview_delta(player, it)}"
                     seller_rows.append(f"{i:>2}) {label}  — {price} or")
                 else:
                     label = item_brief_stats(it)
@@ -4898,6 +5501,8 @@ def open_shop(player, depth, price_mult=1.0, shop_label='Marchand'):
                 seller_rows.append(f" - p : acheter parchemin {sp.name} ({sp_price} or)")
         seller_rows.append(" - v<num> : vendre VOTRE item (voir encadré du bas)")
         seller_rows.append(" - va : vendre TOUS vos objets équipables")
+        seller_rows.append(" - vc<num> : vendre 1 unité de VOTRE consommable")
+        seller_rows.append(" - vcm<num> / vcmax<num> : vendre toute la pile de VOTRE consommable")
         seller_rows.append(" - s<num> : détails de VOTRE item (voir encadré du bas)")
         seller_rows.append(" - q : quitter la boutique")
 
@@ -4908,25 +5513,29 @@ def open_shop(player, depth, price_mult=1.0, shop_label='Marchand'):
             player_rows.append(c('(Aucun objet vendable dans l’inventaire)', Ansi.BRIGHT_BLACK))
         else:
             for i, pit in enumerate(player.inventory, 1):
-                val = max(5, price_of(pit)//2)
+                val = _sell_value(pit)
                 player_rows.append(f"{i:>2}) {item_summary(pit)}  — vend: {val} or")
 
-        # (Optionnel) Afficher vos consommables en lecture seule
-        if getattr(player, 'consumables', None):
-            player_rows.append('')
-            player_rows.append(c('Vos consommables (non vendables)', Ansi.BRIGHT_CYAN))
-            cons = _consumable_stacks(player)
-            if not cons:
-                player_rows.append(c('(Vide)', Ansi.BRIGHT_BLACK))
-            else:
-                for st in cons:
-                    player_rows.append(f" • {item_summary(st['item'])} x{st['qty']}")
+        # Piles de consommables vendables séparément des équipements.
+        player_rows.append('')
+        player_rows.append(c('Vos consommables vendables', Ansi.BRIGHT_CYAN))
+        cons = _consumable_stacks(player)
+        if not cons:
+            player_rows.append(c('(Vide)', Ansi.BRIGHT_BLACK))
+        else:
+            for i, st in enumerate(cons, 1):
+                unit_value = _sell_value(st['item'])
+                stack_value = unit_value * int(st['qty'])
+                player_rows.append(
+                    f"{i:>2}) {item_summary(st['item'])} x{st['qty']}  "
+                    f"— vend: {unit_value} or/unité ({stack_value} or la pile)"
+                )
 
         # ==== Rendu : deux boîtes l’une sous l’autre ====
         clear_screen()
         draw_box(f"Vendeur — {shop_label} (Étage {depth})", seller_rows, width=BOX_W)
         print()  # petite marge visuelle
-        draw_box("Vos objets (vendre: v<num>/va  •  détails: s<num>)", player_rows, width=BOX_W)
+        draw_box("Vos sacs (objets: v<num>/va • consommables: vc<num>/vcm<num>)", player_rows, width=BOX_W)
 
         # ==== Commandes ====
         cmd = input('> ').strip().lower()
@@ -4963,7 +5572,7 @@ def open_shop(player, depth, price_mult=1.0, shop_label='Marchand'):
                     print('Or insuffisant.'); time.sleep(0.8); continue
 
                 if isinstance(it, Consumable):
-                    # sac dédié aux consommables (non vendables)
+                    # Sac dédié aux consommables empilables.
                     if _add_consumable(player, it, qty=1) <= 0:
                         print('Sac de consommables plein.'); time.sleep(0.8); continue
                     player.gold -= price
@@ -4982,18 +5591,38 @@ def open_shop(player, depth, price_mult=1.0, shop_label='Marchand'):
         if cmd == 'va':
             if not player.inventory:
                 print("Aucun objet à vendre."); time.sleep(0.6); continue
-            total = sum(max(5, price_of(it)//2) for it in player.inventory)
+            total = sum(_sell_value(it) for it in player.inventory)
             sold = len(player.inventory)
             player.inventory.clear()
             player.gold += total
             draw_box("Vente groupée", [f"{sold} objets vendus", f"+{total} or"], width=60)
             time.sleep(0.8)
             continue
+        # VENTE CONSOMMABLES — une pile complète (vcm<num>/vcmax<num>).
+        stack_sale_idx = _parse_indexed_command(cmd, 'vcmax', 'vcm')
+        if stack_sale_idx is not None:
+            idx = stack_sale_idx
+            cns, sold, gain = _sell_consumable_at(player, idx, qty=None)
+            if sold <= 0:
+                print("Numéro invalide pour la vente de consommable."); time.sleep(0.6)
+            else:
+                draw_box("Vente de pile", [f"{cns.name} x{sold} vendu", f"+{gain} or"], width=64)
+                time.sleep(0.8)
+            continue
+        # VENTE CONSOMMABLES — une unité (vc<num>).
+        if cmd.startswith('vc') and cmd[2:].isdigit():
+            idx = int(cmd[2:]) - 1
+            cns, sold, gain = _sell_consumable_at(player, idx, qty=1)
+            if sold <= 0:
+                print("Numéro invalide pour la vente de consommable."); time.sleep(0.6)
+            else:
+                print(f"Vendu : {cns.name} x{sold} (+{gain} or)."); time.sleep(0.7)
+            continue
         if cmd.startswith('v') and cmd[1:].isdigit():
             idx = int(cmd[1:]) - 1
             if 0 <= idx < len(player.inventory):
                 it = player.inventory.pop(idx)
-                gain = max(5, price_of(it)//2)
+                gain = _sell_value(it)
                 player.gold += gain
             else:
                 print("Numéro invalide pour la vente."); time.sleep(0.6)
@@ -5126,15 +5755,11 @@ def apply_player_class_choice(player, klass):
     return True
 
 def open_class_trainer(player):
-    clear_screen()
     if getattr(player, 'class_chosen', False):
-        draw_box("Maître d'armes", [
-            "« Une lame ne change pas de serment au milieu du gué. »",
-            f"Votre voie est déjà fixée: {player.klass}.",
-            "Le choix de classe est unique pour cette partie.",
-        ], width=82)
-        pause()
+        open_recycling_workshop(player)
         return
+
+    clear_screen()
     rows = [
         "« Le puits réclame une voie claire. Choisissez celle qui portera votre nom. »",
         "Ce choix est définitif.",
@@ -5541,6 +6166,8 @@ def game_loop():
             open_stats_interface(player); continue
         if act == 'm':
             pos = open_spellbook(player, f.depth, f, pos); continue
+        if act == 'f':
+            pos = open_spell_favorites(player, f.depth, f, pos); continue
         if act == 'e':
             if getattr(f, 'is_village', False):
                 if pos == f.down:
@@ -5549,6 +6176,7 @@ def game_loop():
                         draw_box("Puits du donjon", [
                             "Le puits reste silencieux.",
                             "Choisissez d'abord votre classe auprès du maître d'armes.",
+                            "Vous pourrez aussi y recycler vos objets en fragments.",
                         ], width=82)
                         pause()
                         continue
@@ -5743,7 +6371,7 @@ def game_loop():
                         draw_box('Trouvaille', lines, width=84)
                         maybe_autocomplete_quests(player)
                         f.items.discard(pos)
-                        time.sleep(0.4)
+                        pause()
 
                     # Trésors (⚠️ en-dehors du bloc items !)
                     if hasattr(f, 'treasures') and pos in f.treasures:
@@ -5835,6 +6463,12 @@ def run_tests():
     # Résumé stats
     p=Player('Test'); s=_ansi_re.sub('', p.stats_summary())
     assert 'HP:' in s and 'ATK:' in s and 'DEF:' in s and 'CRIT:' in s, 'stats_summary format invalide'
+    stat_item = Item('Stats test', 'accessory', 4, 2, 1, 0.03, 'Rare', 'Test.', {'pouv': 2})
+    stat_txt = _ansi_re.sub('', item_brief_stats(stat_item))
+    for expected in ('HP+4', 'ATK+2', 'DEF+1', 'CRIT+0.03', 'POUV+2'):
+        assert expected in stat_txt, f'Stat item manquante: {expected}'
+    zero_item_txt = _ansi_re.sub('', item_brief_stats(Item('Zero test', 'weapon', 0, 2, 0, 0.00, 'Commun', 'Test.', None)))
+    assert 'ATK+2' in zero_item_txt and 'HP+0' not in zero_item_txt and 'DEF+0' not in zero_item_txt and 'CRIT+0.00' not in zero_item_txt and 'POUV+0' not in zero_item_txt, 'Stats nulles à masquer avant delta'
     # Normalisation du résultat de combat (régression)
     assert _normalize_fight_result(('win', 'slime')) == ('win', 'slime')
     assert _normalize_fight_result('fled') == ('fled', None)
@@ -5896,6 +6530,24 @@ def run_tests():
     assert _consumable_slots_used(p2) == 2 and _consumable_total_count(p2) == 4, 'Nouveau slot attendu au 4e exemplaire'
     _consume_consumable_at(p2, 0)
     assert _consumable_total_count(p2) == 3, 'Consommation d unité invalide'
+    # Potions de mana: lootables pour tout le monde, chères, et restauration multi-slots.
+    mana_pool = [cns for cns in (CONSUMABLE_POOL + HIGH_TIER_POTIONS) if cns.effect == 'restore_spell_slots']
+    assert len(mana_pool) >= 4, 'Gammes de mana manquantes'
+    assert any(cns.rarity == 'Commun' for cns in CONSUMABLE_POOL if cns.effect == 'restore_spell_slots'), 'Mana commun doit être lootable tôt'
+    assert any(cns.rarity == 'Rare' for cns in CONSUMABLE_POOL if cns.effect == 'restore_spell_slots'), 'Mana rare doit être lootable tôt'
+    assert all(price_of(cns) > price_of(heal) for cns in mana_pool if cns.rarity == 'Commun'), 'Mana commun doit coûter plus cher que soin commun'
+    rare_heal = next(cns for cns in CONSUMABLE_POOL if cns.effect == 'heal' and cns.rarity == 'Rare')
+    assert all(price_of(cns) > price_of(rare_heal) for cns in mana_pool if cns.rarity == 'Rare'), 'Mana rare doit coûter plus cher que soin rare'
+    p_mana = Player('ManaPotionTest', klass='Mage')
+    p_mana.level = 6
+    p_mana.spells_cast_this_floor = 5
+    mana_rare = next(cns for cns in mana_pool if cns.rarity == 'Rare')
+    status, _msg = _apply_consumable_effect(p_mana, mana_rare)
+    assert status == 'used' and p_mana.spells_cast_this_floor == 1, 'Potion de mana rare doit restaurer 4 emplacements'
+    status_full, _msg_full = _apply_consumable_effect(p_mana, mana_rare)
+    assert status_full == 'used' and p_mana.spells_cast_this_floor == 0, 'Potion de mana ne doit pas dépasser le plafond'
+    status_blocked, _msg_blocked = _apply_consumable_effect(p_mana, mana_rare)
+    assert status_blocked == 'blocked', 'Potion de mana pleine doit être bloquée'
     # Fragments: stack max 5 + conversion en permanent (valeur d'un fragment, pas x5)
     p3 = Player('FragTest')
     frag = GEM_FRAGMENT_POOL[0]  # frag_atk_pct (0.06, 2)
@@ -5909,6 +6561,33 @@ def run_tests():
     for _ in range(3):
         assert _add_consumable(p3, frag2, qty=1) == 1
     assert abs(float(p3.passive_specials.get('perm_frag_def_pct', 0.0))) < 1e-9, 'Conversion ne doit pas dépendre de la somme inter-types'
+    frag_stat_text = _ansi_re.sub('', "\n".join(_fragment_stats_rows(p3)))
+    assert 'Stacks en sac: 1' in frag_stat_text and 'Fragments: 3' in frag_stat_text, 'Stats fragments doivent compter les stacks du sac'
+    assert 'Éclat de quartz x3' in frag_stat_text and 'dégâts subis' in frag_stat_text, 'Stats fragments doivent afficher les effets des piles'
+    assert 'ATK: +6% permanent' in frag_stat_text, 'Stats fragments doivent afficher les effets permanents'
+    # Recyclage: 3 communs -> 1 fragment commun, avec reste persistant.
+    p_rec = Player('RecycleTest')
+    p_rec.inventory = [COMMON_ITEMS[0], COMMON_ITEMS[1], COMMON_ITEMS[2], RARE_ITEMS[0], EPIC_ITEMS[0], LEGENDARY_ITEMS[0]]
+    idxs, err = _parse_recycle_selection('1,2-3', p_rec.inventory)
+    assert err is None and idxs == [0, 1, 2], 'Parsing sélection recyclage invalide'
+    counts, rem = _recycle_yield_counts([p_rec.inventory[i] for i in idxs], p_rec.recycle_remainders)
+    assert counts == {'Commun': 1} and rem.get('Commun') == 0, '3 communs doivent donner 1 fragment commun'
+    preview = _recycle_selection_preview(p_rec, idxs)
+    ok, _msg = _apply_recycling(p_rec, preview)
+    assert ok and len(p_rec.inventory) == 3 and _consumable_total_count(p_rec) == 1, 'Application recyclage invalide'
+    counts1, rem1 = _recycle_yield_counts([COMMON_ITEMS[0]], {'Commun': 0})
+    counts2, rem2 = _recycle_yield_counts([COMMON_ITEMS[1], COMMON_ITEMS[2]], rem1)
+    assert counts1 == {} and rem1.get('Commun') == 1, 'Un commun seul doit laisser un reste'
+    assert counts2 == {'Commun': 1} and rem2.get('Commun') == 0, 'Le reste commun doit être réutilisé'
+    counts_hi, rem_hi = _recycle_yield_counts([RARE_ITEMS[0], EPIC_ITEMS[0], LEGENDARY_ITEMS[0], CURSED_ODDITIES[-1]], {'Commun': 0})
+    assert counts_hi.get('Rare') == 2 and counts_hi.get('Épique') == 3 and counts_hi.get('Commun') == 1, 'Rendement haute rareté invalide'
+    assert rem_hi.get('Commun') == 0, 'Les raretés hautes ne doivent pas créer de reste commun'
+    p_full = Player('RecycleFullBag')
+    p_full.consumables_limit = 0
+    p_full.inventory = [RARE_ITEMS[0]]
+    preview_full = _recycle_selection_preview(p_full, [0])
+    ok_full, _msg_full = _apply_recycling(p_full, preview_full)
+    assert not ok_full and len(p_full.inventory) == 1 and _consumable_total_count(p_full) == 0, 'Recyclage bloqué doit être atomique'
     # Classe mage: grimoire de départ + scaling POUV
     pm = Player('MageTest', klass='Mage')
     assert pm.klass == 'Mage' and pm.spellbook_unlocked and len(pm.spell_scrolls) >= 1, 'Mage: démarrage grimoire/sort invalide'
@@ -5932,6 +6611,75 @@ def run_tests():
     assert hi_def >= low_def, 'Buff DEF magique doit augmenter avec la POUV'
     assert float(hi_focus.get('spell_crit', 0.0)) >= float(low_focus.get('spell_crit', 0.0)), 'Buff CRIT magique doit augmenter avec la POUV'
     assert float(hi_focus.get('spell_power', 0.0)) >= float(low_focus.get('spell_power', 0.0)), 'Buff puissance magique doit augmenter avec la POUV'
+
+    # Entrée ergonomique: Tab doit ouvrir la même action que I.
+    assert _action_from_key('\t') == 'i', 'Tab doit ouvrir l inventaire'
+
+    # Gain de plusieurs niveaux: un seul résumé, avec compteur et bonus cumulés.
+    p_levels = Player('LevelSummaryTest')
+    gained = p_levels.gain_xp(BALANCE['level_xp_threshold'] * 3 + 5)
+    assert gained == 3 and p_levels.level == 4 and p_levels.xp == 5, 'Gain multi-niveaux invalide'
+    level_msg = _format_level_up_message(3, 4, 9, 3, 1.5, 0, 12)
+    assert 'gagné 3 niveaux' in level_msg and 'Niveau 4' in level_msg, 'Résumé multi-niveaux invalide'
+    assert f"/{BALANCE['level_xp_threshold']}" in _ansi_re.sub('', p_levels.stats_summary()), 'Seuil XP ATH invalide'
+
+    # Les sorts générant de l'or coûtent davantage d'emplacements.
+    assert _spell_slot_cost('pulse') == 0, 'Cantrip doit rester gratuit'
+    assert _spell_slot_cost('gild_touch') == 2, 'Toucher doré doit coûter 2 emplacements'
+    assert _spell_slot_cost('prospection') == 3, 'Prospection doit coûter 3 emplacements'
+    p_cost = Player('SpellCostTest', klass='Mage')
+    p_cost.spell_scrolls = ['prospection']
+    p_cost.spells_cast_this_floor = _spell_cast_limit(p_cost) - 1
+    assert p_cost.can_cast_spell() is False, 'Un emplacement ne doit pas suffire à Prospection'
+    p_cost.spell_scrolls = ['pulse']
+    assert p_cost.can_cast_spell() is True, 'Un cantrip doit rester lançable sans emplacement'
+
+    # Renvoi d'invocation: le cooldown doit rester intact.
+    p_dismiss = Player('DismissTest')
+    p_dismiss.summon = _summon_from_spell(p_dismiss, 'summon_slime')
+    p_dismiss.summon_spell_cds['summon_slime'] = 4
+    dismissed_name = _dismiss_active_summon(p_dismiss)
+    assert dismissed_name and p_dismiss.summon is None, 'Renvoi invocation invalide'
+    assert p_dismiss.summon_spell_cds.get('summon_slime') == 4, 'Renvoi ne doit pas annuler le cooldown'
+    assert _dismiss_active_summon(p_dismiss) is None, 'Renvoi sans invocation doit être sûr'
+
+    # Vente et jet des consommables par unité ou pile.
+    p_sale = Player('ConsumableSaleTest')
+    p_sale.gold = 0
+    assert _add_consumable(p_sale, heal, qty=3) == 3
+    sold_item, sold_qty, sold_gain = _sell_consumable_at(p_sale, 0, qty=1)
+    assert sold_item == heal and sold_qty == 1 and sold_gain == _sell_value(heal), 'Vente unitaire invalide'
+    assert _consumable_total_count(p_sale) == 2 and p_sale.gold == sold_gain, 'État après vente unitaire invalide'
+    sold_item2, sold_qty2, sold_gain2 = _sell_consumable_at(p_sale, 0, qty=None)
+    assert sold_item2 == heal and sold_qty2 == 2, 'Vente de pile invalide'
+    assert _consumable_total_count(p_sale) == 0 and p_sale.gold == sold_gain + sold_gain2, 'État après vente de pile invalide'
+    gold_before_invalid = p_sale.gold
+    assert _sell_consumable_at(p_sale, 99, qty=None) == (None, 0, 0), 'Index de vente invalide mal géré'
+    assert p_sale.gold == gold_before_invalid, 'Vente invalide ne doit pas modifier l or'
+    p_drop = Player('ConsumableDropTest')
+    assert _add_consumable(p_drop, heal, qty=3) == 3
+    assert _discard_consumable_at(p_drop, 0, qty=99) == 3, 'Jet de pile invalide'
+    assert _consumable_total_count(p_drop) == 0, 'Pile jetée doit disparaître'
+    assert _parse_indexed_command('ucmax12', 'ucmax', 'ucm') == 11, 'Parsing ucmax invalide'
+    assert _parse_indexed_command('dcmax2', 'dcmax', 'dcm') == 1, 'Parsing dcmax invalide'
+    assert _parse_indexed_command('vcmax3', 'vcmax', 'vcm') == 2, 'Parsing vcmax invalide'
+
+    # Réorganisation du grimoire et favoris partagent la même source de vérité.
+    p_book = Player('SpellOrderTest')
+    p_book.spellbook_unlocked = True
+    p_book.spell_scrolls = ['pulse', 'spark', 'teleport']
+    assert _toggle_spell_favorite(p_book, 'spark') is True
+    assert _toggle_spell_favorite(p_book, 'teleport') is True
+    assert _favorite_spell_ids(p_book) == ['spark', 'teleport'], 'Ordre initial des favoris invalide'
+    assert _move_spell_scroll(p_book, 3, 1) is True
+    assert p_book.spell_scrolls == ['teleport', 'pulse', 'spark'], 'Réorganisation du grimoire invalide'
+    assert _favorite_spell_ids(p_book) == ['teleport', 'spark'], 'Favoris non réordonnés avec le grimoire'
+    assert _quick_spell_label(0) == '&/1' and _quick_spell_label(10) is None, 'Bornes raccourcis invalides'
+    assert _spell_usable_in_context('teleport', 'explore') and not _spell_usable_in_context('teleport', 'combat'), 'Contexte Translocation invalide'
+    assert _spell_usable_in_context('spark', 'combat') and not _spell_usable_in_context('spark', 'explore'), 'Contexte Étincelle invalide'
+    assert _move_spell_scroll(p_book, 0, 99) is False, 'Position invalide ne doit pas déplacer de sort'
+    p_book.spell_scrolls.remove('spark')
+    assert 'spark' not in _favorite_spell_ids(p_book), 'Favori orphelin non nettoyé'
     print('OK')
 
 if __name__=='__main__':
